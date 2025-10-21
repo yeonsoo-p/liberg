@@ -5,13 +5,29 @@ project(liberg VERSION 0.1.0 LANGUAGES C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+# Optimization flags
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# Compiler optimization flags
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    set(CMAKE_C_FLAGS_RELEASE "-O3 -march=native -DNDEBUG")
+    set(CMAKE_C_FLAGS_DEBUG "-O0 -g -Wall -Wextra -Wpedantic")
+elseif(CMAKE_C_COMPILER_ID MATCHES "MSVC")
+    set(CMAKE_C_FLAGS_RELEASE "/O2 /DNDEBUG")
+    set(CMAKE_C_FLAGS_DEBUG "/Od /Zi /Wall")
+endif()
+
 # Library source files
 set(LIBERG_SOURCES
     src/infofile.c
+    src/infofile_arena.c
 )
 
 set(LIBERG_HEADERS
     include/infofile.h
+    include/infofile_arena.h
 )
 
 # Create static library
@@ -35,6 +51,10 @@ target_include_directories(liberg_shared PUBLIC
 # Test executable
 add_executable(test_infofile test/test_infofile.c)
 target_link_libraries(test_infofile PRIVATE liberg)
+
+# Benchmark executable
+add_executable(bench_infofile test/bench_infofile.c)
+target_link_libraries(bench_infofile PRIVATE liberg)
 
 # Enable testing
 enable_testing()
