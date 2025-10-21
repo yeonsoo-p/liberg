@@ -7,11 +7,11 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # Library source files
 set(LIBERG_SOURCES
-    src/erginfo.c
+    src/infofile.c
 )
 
 set(LIBERG_HEADERS
-    include/erginfo.h
+    include/infofile.h
 )
 
 # Create static library
@@ -33,16 +33,12 @@ target_include_directories(liberg_shared PUBLIC
 )
 
 # Test executable
-add_executable(test_erginfo test/test_erginfo.c)
-target_link_libraries(test_erginfo PRIVATE liberg)
-
-# Example executable
-add_executable(example example/example.c)
-target_link_libraries(example PRIVATE liberg)
+add_executable(test_infofile test/test_infofile.c)
+target_link_libraries(test_infofile PRIVATE liberg)
 
 # Enable testing
 enable_testing()
-add_test(NAME erginfo_tests COMMAND test_erginfo)
+add_test(NAME infofile_tests COMMAND test_infofile)
 
 # Installation rules
 install(TARGETS liberg liberg_shared
