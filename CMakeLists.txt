@@ -24,6 +24,7 @@ set(LIBERG_SOURCES
     src/arena.c
     src/infofile.c
     src/infofile_arena.c
+    src/string_simd.c
 )
 
 set(LIBERG_SIMD_SOURCES
@@ -35,6 +36,7 @@ set(LIBERG_SIMD_SOURCES
     src/infofile_arena_simd_opt.c
     src/simple_parser.c
     src/infofile_simple.c
+    src/string_simd.c
 )
 
 set(LIBERG_HEADERS
@@ -46,14 +48,17 @@ set(LIBERG_HEADERS
     include/infofile_arena_simd_opt.h
     include/simple_parser.h
     include/infofile_simple.h
+    include/string_simd.h
 )
 
 # Create static library
 add_library(liberg STATIC ${LIBERG_SOURCES} ${LIBERG_HEADERS})
+target_compile_options(liberg PRIVATE -mavx2)
 
 # Create shared library
 add_library(liberg_shared SHARED ${LIBERG_SOURCES} ${LIBERG_HEADERS})
 set_target_properties(liberg_shared PROPERTIES OUTPUT_NAME liberg)
+target_compile_options(liberg_shared PRIVATE -mavx2)
 
 # Create SIMD-enabled static library
 add_library(liberg_simd STATIC ${LIBERG_SIMD_SOURCES} ${LIBERG_HEADERS})
