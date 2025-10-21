@@ -1,4 +1,5 @@
 #include <infofile_arena.h>
+#include <arena.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,56 +9,6 @@
 #define INITIAL_CAPACITY 64
 #define INITIAL_ARENA_SIZE (256 * 1024)  // 256KB initial arena
 #define BUFFER_SIZE 4096
-
-/* Arena allocation functions */
-static void arena_init(Arena *arena, size_t initial_size) {
-    arena->buffer = malloc(initial_size);
-    arena->capacity = initial_size;
-    arena->used = 0;
-}
-
-static void arena_ensure_capacity(Arena *arena, size_t total_needed) {
-    if (total_needed > arena->capacity) {
-        size_t new_capacity = arena->capacity;
-        while (new_capacity < total_needed) {
-            new_capacity *= 2;
-        }
-        arena->buffer = realloc(arena->buffer, new_capacity);
-        arena->capacity = new_capacity;
-    }
-}
-
-static void arena_grow(Arena *arena, size_t needed) {
-    size_t new_capacity = arena->capacity;
-    while (new_capacity - arena->used < needed) {
-        new_capacity *= 2;
-    }
-    arena->buffer = realloc(arena->buffer, new_capacity);
-    arena->capacity = new_capacity;
-}
-
-static char *arena_alloc(Arena *arena, size_t size) {
-    if (arena->used + size > arena->capacity) {
-        arena_grow(arena, size);
-    }
-    char *ptr = arena->buffer + arena->used;
-    arena->used += size;
-    return ptr;
-}
-
-static char *arena_strdup(Arena *arena, const char *str) {
-    size_t len = strlen(str) + 1;
-    char *ptr = arena_alloc(arena, len);
-    memcpy(ptr, str, len);
-    return ptr;
-}
-
-static char *arena_strndup(Arena *arena, const char *str, size_t n) {
-    char *ptr = arena_alloc(arena, n + 1);
-    memcpy(ptr, str, n);
-    ptr[n] = '\0';
-    return ptr;
-}
 
 void infofile_arena_init(InfoFileArena *info) {
     info->entries = malloc(INITIAL_CAPACITY * sizeof(InfoFileEntryArena));
@@ -263,11 +214,11 @@ int infofile_arena_parse_file(const char *filename, InfoFileArena *info) {
     buffer[bytes_read] = '\0';
     fclose(fp);
 
-    // Pre-grow arena to avoid reallocation during parsing
+    // Pre-allocate arena chunks to minimize allocations during parsing
     // Estimate: file size * 2 should be enough for trimmed strings
-    // This must be done BEFORE any pointers into the arena are stored
+    // With chunk-based arena, this is safe - never invalidates pointers
     size_t estimated_arena_size = file_size * 2;
-    arena_ensure_capacity(&info->arena, estimated_arena_size);
+    arena_reserve(&info->arena, estimated_arena_size);
 
     int result = infofile_arena_parse_string(buffer, bytes_read, info);
     free(buffer);
@@ -286,11 +237,8 @@ const char *infofile_arena_get(const InfoFileArena *info, const char *key) {
 
 void infofile_arena_free(InfoFileArena *info) {
     free(info->entries);
-    free(info->arena.buffer);
+    arena_free(&info->arena);
     info->entries = NULL;
     info->count = 0;
     info->capacity = 0;
-    info->arena.buffer = NULL;
-    info->arena.capacity = 0;
-    info->arena.used = 0;
 }

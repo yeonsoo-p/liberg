@@ -94,7 +94,7 @@ static void benchmark_arena(const char *filename, int iterations, BenchmarkResul
         if (i == 0)
         {
             result->entry_count = info.count;
-            result->memory_allocated = info.arena.used;
+            result->memory_allocated = arena_get_used(&info.arena);
         }
 
         infofile_arena_free(&info);
@@ -191,7 +191,7 @@ static void benchmark_arena_simd(const char *filename, int iterations, Benchmark
         if (i == 0)
         {
             result->entry_count = info.count;
-            result->memory_allocated = info.arena.used;
+            result->memory_allocated = arena_get_used(&info.arena);
         }
 
         infofile_arena_simd_free(&info);
@@ -228,7 +228,7 @@ static void benchmark_arena_simd_opt(const char *filename, int iterations, Bench
         if (i == 0)
         {
             result->entry_count = info.count;
-            result->memory_allocated = info.arena.key_arena.used + info.arena.value_arena.used;
+            result->memory_allocated = arena_get_used(&info.arena.key_arena) + arena_get_used(&info.arena.value_arena);
         }
 
         infofile_arena_simd_opt_free(&info);

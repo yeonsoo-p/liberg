@@ -1,4 +1,5 @@
 #include <infofile_arena_simd_opt.h>
+#include <arena.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,46 +20,14 @@
  * Separate arenas for keys (hot) and values (cold) for better cache locality
  * ============================================================================ */
 
-static void arena_init_opt(ArenaSimdOpt *arena, size_t initial_size) {
-    arena->buffer = malloc(initial_size);
-    arena->capacity = initial_size;
-    arena->used = 0;
-}
-
-static void arena_ensure_capacity_opt(ArenaSimdOpt *arena, size_t total_needed) {
-    if (total_needed > arena->capacity) {
-        size_t new_capacity = arena->capacity;
-        while (new_capacity < total_needed) {
-            new_capacity *= 2;
-        }
-        arena->buffer = realloc(arena->buffer, new_capacity);
-        arena->capacity = new_capacity;
-    }
-}
-
-static char *arena_alloc_opt(ArenaSimdOpt *arena, size_t size) {
-    if (arena->used + size > arena->capacity) {
-        fprintf(stderr, "ERROR: Arena grew during parsing - this will corrupt data!\n");
-        exit(1);
-    }
-    char *ptr = arena->buffer + arena->used;
-    arena->used += size;
-    return ptr;
-}
-
-static char *arena_strndup_opt(ArenaSimdOpt *arena, const char *str, size_t n) {
-    char *ptr = arena_alloc_opt(arena, n + 1);
-    memcpy(ptr, str, n);
-    ptr[n] = '\0';
-    return ptr;
-}
+/* No longer need safety wrappers - chunk-based arena never invalidates pointers! */
 
 void infofile_arena_simd_opt_init(InfoFileArenaSimdOpt *info) {
     info->entries = malloc(INITIAL_CAPACITY * sizeof(InfoFileEntryArenaSimdOpt));
     info->count = 0;
     info->capacity = INITIAL_CAPACITY;
-    arena_init_opt(&info->arena.key_arena, INITIAL_ARENA_SIZE);
-    arena_init_opt(&info->arena.value_arena, INITIAL_ARENA_SIZE);
+    arena_init(&info->arena.key_arena, INITIAL_ARENA_SIZE);
+    arena_init(&info->arena.value_arena, INITIAL_ARENA_SIZE);
 }
 
 static void ensure_capacity_opt(InfoFileArenaSimdOpt *info) {
@@ -359,10 +328,10 @@ int infofile_arena_simd_opt_parse_string(const char *data, size_t len, InfoFileA
             info->entries[info->count].key = current_key;
             if (value_buffer && value_buffer_used > 0) {
                 info->entries[info->count].value =
-                    arena_strndup_opt(&info->arena.value_arena, value_buffer, value_buffer_used);
+                    arena_strndup(&info->arena.value_arena, value_buffer, value_buffer_used);
             } else {
                 info->entries[info->count].value =
-                    arena_strndup_opt(&info->arena.value_arena, "", 0);
+                    arena_strndup(&info->arena.value_arena, "", 0);
             }
             info->count++;
             current_key = NULL;
@@ -394,8 +363,8 @@ int infofile_arena_simd_opt_parse_string(const char *data, size_t len, InfoFileA
             size_t key_len = key_end - key_start;
             size_t val_len = val_end - val_start;
 
-            current_key = arena_strndup_opt(&info->arena.key_arena, key_start, key_len);
-            const char *value = arena_strndup_opt(&info->arena.value_arena, val_start, val_len);
+            current_key = arena_strndup(&info->arena.key_arena, key_start, key_len);
+            const char *value = arena_strndup(&info->arena.value_arena, val_start, val_len);
 
             ensure_capacity_opt(info);
             info->entries[info->count].key = current_key;
@@ -409,7 +378,7 @@ int infofile_arena_simd_opt_parse_string(const char *data, size_t len, InfoFileA
             simd_trim_zero_copy(trim_start, sep_info.sep_pos, &key_start, &key_end);
 
             size_t key_len = key_end - key_start;
-            current_key = arena_strndup_opt(&info->arena.key_arena, key_start, key_len);
+            current_key = arena_strndup(&info->arena.key_arena, key_start, key_len);
 
             // Check if there's content after the colon
             if (sep_info.sep_pos + 1 < trim_end) {
@@ -447,10 +416,10 @@ int infofile_arena_simd_opt_parse_string(const char *data, size_t len, InfoFileA
         info->entries[info->count].key = current_key;
         if (value_buffer && value_buffer_used > 0) {
             info->entries[info->count].value =
-                arena_strndup_opt(&info->arena.value_arena, value_buffer, value_buffer_used);
+                arena_strndup(&info->arena.value_arena, value_buffer, value_buffer_used);
         } else {
             info->entries[info->count].value =
-                arena_strndup_opt(&info->arena.value_arena, "", 0);
+                arena_strndup(&info->arena.value_arena, "", 0);
         }
         info->count++;
     }
@@ -484,8 +453,8 @@ int infofile_arena_simd_opt_parse_file(const char *filename, InfoFileArenaSimdOp
     size_t estimated_key_size = file_size / 3;    // ~33% for keys
     size_t estimated_value_size = file_size * 5 / 3;  // ~166% for values (with overhead)
 
-    arena_ensure_capacity_opt(&info->arena.key_arena, estimated_key_size);
-    arena_ensure_capacity_opt(&info->arena.value_arena, estimated_value_size);
+    arena_reserve(&info->arena.key_arena, estimated_key_size);
+    arena_reserve(&info->arena.value_arena, estimated_value_size);
 
     char *buffer = malloc(file_size + 1);
     if (!buffer) {
@@ -515,15 +484,9 @@ const char *infofile_arena_simd_opt_get(const InfoFileArenaSimdOpt *info, const 
 
 void infofile_arena_simd_opt_free(InfoFileArenaSimdOpt *info) {
     free(info->entries);
-    free(info->arena.key_arena.buffer);
-    free(info->arena.value_arena.buffer);
+    arena_free(&info->arena.key_arena);
+    arena_free(&info->arena.value_arena);
     info->entries = NULL;
     info->count = 0;
     info->capacity = 0;
-    info->arena.key_arena.buffer = NULL;
-    info->arena.key_arena.capacity = 0;
-    info->arena.key_arena.used = 0;
-    info->arena.value_arena.buffer = NULL;
-    info->arena.value_arena.capacity = 0;
-    info->arena.value_arena.used = 0;
 }

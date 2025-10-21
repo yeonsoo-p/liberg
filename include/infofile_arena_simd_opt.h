@@ -2,21 +2,16 @@
 #define INFOFILE_ARENA_SIMD_OPT_H
 
 #include <stddef.h>
+#include <arena.h>
 
 /**
  * Dual arena allocator for optimized cache locality
  * Keys (hot) and values (cold) stored separately
  */
 typedef struct {
-    char *buffer;       /* Memory buffer */
-    size_t capacity;    /* Total capacity */
-    size_t used;        /* Bytes used */
-} ArenaSimdOpt;
-
-typedef struct {
-    ArenaSimdOpt key_arena;    /* Hot data - accessed during lookups */
-    ArenaSimdOpt value_arena;  /* Cold data - accessed only when found */
-} DualArenaSimdOpt;
+    Arena key_arena;    /* Hot data - accessed during lookups */
+    Arena value_arena;  /* Cold data - accessed only when found */
+} DualArena;
 
 /**
  * Represents a key-value pair (optimized version)
@@ -35,7 +30,7 @@ typedef struct {
     InfoFileEntryArenaSimdOpt *entries;  /* Array of entries */
     size_t count;                        /* Number of entries */
     size_t capacity;                     /* Allocated capacity */
-    DualArenaSimdOpt arena;              /* Dual arena for keys/values */
+    DualArena arena;                     /* Dual arena for keys/values */
 } InfoFileArenaSimdOpt;
 
 /**

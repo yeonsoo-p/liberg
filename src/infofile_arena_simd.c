@@ -1,4 +1,5 @@
 #include <infofile_arena_simd.h>
+#include <arena.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,46 +11,7 @@
 #define INITIAL_ARENA_SIZE (256 * 1024)  // 256KB initial arena
 #define BUFFER_SIZE 4096
 
-/* Arena allocation functions */
-static void arena_init(ArenaSimd *arena, size_t initial_size) {
-    arena->buffer = malloc(initial_size);
-    arena->capacity = initial_size;
-    arena->used = 0;
-}
-
-static void arena_ensure_capacity(ArenaSimd *arena, size_t total_needed) {
-    if (total_needed > arena->capacity) {
-        size_t new_capacity = arena->capacity;
-        while (new_capacity < total_needed) {
-            new_capacity *= 2;
-        }
-        arena->buffer = realloc(arena->buffer, new_capacity);
-        arena->capacity = new_capacity;
-    }
-}
-
-static char *arena_alloc(ArenaSimd *arena, size_t size) {
-    if (arena->used + size > arena->capacity) {
-        size_t new_capacity = arena->capacity;
-        while (new_capacity - arena->used < size) {
-            new_capacity *= 2;
-        }
-        // NOTE: This realloc could invalidate existing pointers!
-        // We must ensure this doesn't happen after we start storing pointers
-        fprintf(stderr, "ERROR: Arena grew during parsing - this will corrupt data!\n");
-        exit(1);
-    }
-    char *ptr = arena->buffer + arena->used;
-    arena->used += size;
-    return ptr;
-}
-
-static char *arena_strndup(ArenaSimd *arena, const char *str, size_t n) {
-    char *ptr = arena_alloc(arena, n + 1);
-    memcpy(ptr, str, n);
-    ptr[n] = '\0';
-    return ptr;
-}
+/* No longer need safety wrappers - chunk-based arena never invalidates pointers! */
 
 void infofile_arena_simd_init(InfoFileArenaSimd *info) {
     info->entries = malloc(INITIAL_CAPACITY * sizeof(InfoFileEntryArenaSimd));
@@ -183,7 +145,7 @@ static inline void trim_in_place(const char *str, size_t len, const char **start
 }
 
 /* Allocate trimmed string from arena */
-static const char *arena_alloc_trimmed(ArenaSimd *arena, const char *str, size_t len) {
+static const char *arena_alloc_trimmed(Arena *arena, const char *str, size_t len) {
     const char *start, *end;
     trim_in_place(str, len, &start, &end);
 
@@ -388,7 +350,7 @@ int infofile_arena_simd_parse_file(const char *filename, InfoFileArenaSimd *info
     // Pre-allocate arena to avoid reallocation during parsing
     // Estimate: file size * 2 should be enough
     size_t estimated_arena_size = file_size * 2;
-    arena_ensure_capacity(&info->arena, estimated_arena_size);
+    arena_reserve(&info->arena, estimated_arena_size);
 
     char *buffer = malloc(file_size + 1);
     if (!buffer) {
@@ -417,11 +379,8 @@ const char *infofile_arena_simd_get(const InfoFileArenaSimd *info, const char *k
 
 void infofile_arena_simd_free(InfoFileArenaSimd *info) {
     free(info->entries);
-    free(info->arena.buffer);
+    arena_free(&info->arena);
     info->entries = NULL;
     info->count = 0;
     info->capacity = 0;
-    info->arena.buffer = NULL;
-    info->arena.capacity = 0;
-    info->arena.used = 0;
 }

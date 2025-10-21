@@ -21,11 +21,13 @@ endif()
 
 # Library source files
 set(LIBERG_SOURCES
+    src/arena.c
     src/infofile.c
     src/infofile_arena.c
 )
 
 set(LIBERG_SIMD_SOURCES
+    src/arena.c
     src/infofile.c
     src/infofile_arena.c
     src/infofile_simd.c
@@ -36,6 +38,7 @@ set(LIBERG_SIMD_SOURCES
 )
 
 set(LIBERG_HEADERS
+    include/arena.h
     include/infofile.h
     include/infofile_arena.h
     include/infofile_simd.h
@@ -82,7 +85,10 @@ target_include_directories(liberg_simd_shared PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-# Test executable
+# Test executables
+add_executable(test_arena test/test_arena.c)
+target_link_libraries(test_arena PRIVATE liberg)
+
 add_executable(test_infofile test/test_infofile.c)
 target_link_libraries(test_infofile PRIVATE liberg)
 

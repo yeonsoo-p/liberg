@@ -2,15 +2,7 @@
 #define INFOFILE_ARENA_H
 
 #include <stddef.h>
-
-/**
- * Arena allocator for string storage
- */
-typedef struct {
-    char *buffer;       /* Memory buffer */
-    size_t capacity;    /* Total capacity */
-    size_t used;        /* Bytes used */
-} Arena;
+#include <arena.h>
 
 /**
  * Represents a key-value pair from an info file (arena version)

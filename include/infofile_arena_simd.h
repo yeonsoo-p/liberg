@@ -2,15 +2,7 @@
 #define INFOFILE_ARENA_SIMD_H
 
 #include <stddef.h>
-
-/**
- * Arena allocator for string storage
- */
-typedef struct {
-    char *buffer;       /* Memory buffer */
-    size_t capacity;    /* Total capacity */
-    size_t used;        /* Bytes used */
-} ArenaSimd;
+#include <arena.h>
 
 /**
  * Represents a key-value pair from an info file (arena+SIMD version)
@@ -27,7 +19,7 @@ typedef struct {
     InfoFileEntryArenaSimd *entries;  /* Array of entries */
     size_t count;                     /* Number of entries */
     size_t capacity;                  /* Allocated capacity */
-    ArenaSimd arena;                  /* String storage arena */
+    Arena arena;                      /* String storage arena */
 } InfoFileArenaSimd;
 
 /**
