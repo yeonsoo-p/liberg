@@ -30,6 +30,9 @@ set(LIBERG_SIMD_SOURCES
     src/infofile_arena.c
     src/infofile_simd.c
     src/infofile_arena_simd.c
+    src/infofile_arena_simd_opt.c
+    src/simple_parser.c
+    src/infofile_simple.c
 )
 
 set(LIBERG_HEADERS
@@ -37,6 +40,9 @@ set(LIBERG_HEADERS
     include/infofile_arena.h
     include/infofile_simd.h
     include/infofile_arena_simd.h
+    include/infofile_arena_simd_opt.h
+    include/simple_parser.h
+    include/infofile_simple.h
 )
 
 # Create static library

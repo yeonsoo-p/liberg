@@ -2,6 +2,8 @@
 #include <infofile_arena.h>
 #include <infofile_simd.h>
 #include <infofile_arena_simd.h>
+#include <infofile_arena_simd_opt.h>
+#include <infofile_simple.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -204,7 +206,81 @@ static void benchmark_arena_simd(const char *filename, int iterations, Benchmark
     result->total_time_ms = result->parse_time_ms + result->free_time_ms;
 }
 
-static void print_comparison(const BenchmarkResult *standard, const BenchmarkResult *arena, const BenchmarkResult *simd, const BenchmarkResult *arena_simd)
+static void benchmark_arena_simd_opt(const char *filename, int iterations, BenchmarkResult *result)
+{
+    double start, parse_end, free_end;
+    double total_parse = 0.0;
+    double total_free = 0.0;
+
+    for (int i = 0; i < iterations; i++)
+    {
+        InfoFileArenaSimdOpt info;
+        infofile_arena_simd_opt_init(&info);
+
+        start = get_time_ms();
+        if (infofile_arena_simd_opt_parse_file(filename, &info) != 0)
+        {
+            fprintf(stderr, "Parse failed\n");
+            return;
+        }
+        parse_end = get_time_ms();
+
+        if (i == 0)
+        {
+            result->entry_count = info.count;
+            result->memory_allocated = info.arena.key_arena.used + info.arena.value_arena.used;
+        }
+
+        infofile_arena_simd_opt_free(&info);
+        free_end = get_time_ms();
+
+        total_parse += (parse_end - start);
+        total_free += (free_end - parse_end);
+    }
+
+    result->parse_time_ms = total_parse / iterations;
+    result->free_time_ms = total_free / iterations;
+    result->total_time_ms = result->parse_time_ms + result->free_time_ms;
+}
+
+static void benchmark_simple(const char *filename, int iterations, BenchmarkResult *result)
+{
+    double start, parse_end, free_end;
+    double total_parse = 0.0;
+    double total_free = 0.0;
+
+    for (int i = 0; i < iterations; i++)
+    {
+        InfoFileSimple info;
+        infofile_simple_init(&info);
+
+        start = get_time_ms();
+        if (infofile_simple_parse_file(filename, &info) != 0)
+        {
+            fprintf(stderr, "Parse failed\n");
+            return;
+        }
+        parse_end = get_time_ms();
+
+        if (i == 0)
+        {
+            result->entry_count = info.count;
+            result->memory_allocated = 0;  // TODO: Track memory for simple parser
+        }
+
+        infofile_simple_free(&info);
+        free_end = get_time_ms();
+
+        total_parse += (parse_end - start);
+        total_free += (free_end - parse_end);
+    }
+
+    result->parse_time_ms = total_parse / iterations;
+    result->free_time_ms = total_free / iterations;
+    result->total_time_ms = result->parse_time_ms + result->free_time_ms;
+}
+
+static void print_comparison(const BenchmarkResult *standard, const BenchmarkResult *arena, const BenchmarkResult *simd, const BenchmarkResult *arena_simd, const BenchmarkResult *arena_simd_opt, const BenchmarkResult *simple)
 {
     printf("\n=== Performance Comparison ===\n");
 
@@ -217,38 +293,53 @@ static void print_comparison(const BenchmarkResult *standard, const BenchmarkRes
     double arena_simd_parse_speedup = standard->parse_time_ms / arena_simd->parse_time_ms;
     double arena_simd_total_speedup = standard->total_time_ms / arena_simd->total_time_ms;
 
-    printf("\nSpeedup vs Standard:\n");
-    printf("                   Parse          Total\n");
-    printf("  Arena:           %.2fx          %.2fx\n",
-           arena_parse_speedup, arena_total_speedup);
-    printf("  SIMD:            %.2fx          %.2fx\n",
-           simd_parse_speedup, simd_total_speedup);
-    printf("  Arena+SIMD:      %.2fx          %.2fx\n",
-           arena_simd_parse_speedup, arena_simd_total_speedup);
+    double arena_simd_opt_parse_speedup = standard->parse_time_ms / arena_simd_opt->parse_time_ms;
+    double arena_simd_opt_total_speedup = standard->total_time_ms / arena_simd_opt->total_time_ms;
 
-    printf("\nBest Performer (Arena+SIMD):\n");
-    double best_vs_arena = arena->parse_time_ms / arena_simd->parse_time_ms;
-    double best_vs_simd = simd->parse_time_ms / arena_simd->parse_time_ms;
-    printf("  vs Arena:      %.2fx faster parse\n", best_vs_arena);
-    printf("  vs SIMD:       %.2fx %s parse\n",
-           best_vs_simd > 1.0 ? best_vs_simd : 1.0 / best_vs_simd,
-           best_vs_simd > 1.0 ? "faster" : "slower");
+    double simple_parse_speedup = standard->parse_time_ms / simple->parse_time_ms;
+    double simple_total_speedup = standard->total_time_ms / simple->total_time_ms;
+
+    printf("\nSpeedup vs Standard:\n");
+    printf("                       Parse          Total\n");
+    printf("  Arena:               %.2fx          %.2fx\n",
+           arena_parse_speedup, arena_total_speedup);
+    printf("  SIMD:                %.2fx          %.2fx\n",
+           simd_parse_speedup, simd_total_speedup);
+    printf("  Arena+SIMD:          %.2fx          %.2fx\n",
+           arena_simd_parse_speedup, arena_simd_total_speedup);
+    printf("  Arena+SIMD+Opt:      %.2fx          %.2fx  ⭐\n",
+           arena_simd_opt_parse_speedup, arena_simd_opt_total_speedup);
+    printf("  Simple:              %.2fx          %.2fx\n",
+           simple_parse_speedup, simple_total_speedup);
+
+    printf("\nOptimized vs Previous Best (Arena+SIMD):\n");
+    double opt_improvement_parse = arena_simd->parse_time_ms / arena_simd_opt->parse_time_ms;
+    double opt_improvement_total = arena_simd->total_time_ms / arena_simd_opt->total_time_ms;
+    printf("  Parse improvement:   %.2fx faster (%.1f ms saved)\n",
+           opt_improvement_parse,
+           arena_simd->parse_time_ms - arena_simd_opt->parse_time_ms);
+    printf("  Total improvement:   %.2fx faster (%.1f ms saved)\n",
+           opt_improvement_total,
+           arena_simd->total_time_ms - arena_simd_opt->total_time_ms);
 
     if (standard->memory_allocated > 0)
     {
         printf("\nMemory Comparison:\n");
-        printf("  Standard:      %zu bytes (%.1f MB)\n",
+        printf("  Standard:            %zu bytes (%.1f MB)\n",
                standard->memory_allocated,
                standard->memory_allocated / 1024.0 / 1024.0);
-        printf("  Arena:         %zu bytes (%.1f MB)\n",
+        printf("  Arena:               %zu bytes (%.1f MB)\n",
                arena->memory_allocated,
                arena->memory_allocated / 1024.0 / 1024.0);
-        printf("  SIMD:          %zu bytes (%.1f MB)\n",
+        printf("  SIMD:                %zu bytes (%.1f MB)\n",
                simd->memory_allocated,
                simd->memory_allocated / 1024.0 / 1024.0);
-        printf("  Arena+SIMD:    %zu bytes (%.1f MB)\n",
+        printf("  Arena+SIMD:          %zu bytes (%.1f MB)\n",
                arena_simd->memory_allocated,
                arena_simd->memory_allocated / 1024.0 / 1024.0);
+        printf("  Arena+SIMD+Opt:      %zu bytes (%.1f MB)\n",
+               arena_simd_opt->memory_allocated,
+               arena_simd_opt->memory_allocated / 1024.0 / 1024.0);
     }
 }
 
@@ -271,6 +362,8 @@ int main(int argc, char *argv[])
     BenchmarkResult arena_result = {0};
     BenchmarkResult simd_result = {0};
     BenchmarkResult arena_simd_result = {0};
+    BenchmarkResult arena_simd_opt_result = {0};
+    BenchmarkResult simple_result = {0};
 
     printf("\nRunning standard allocator benchmark...\n");
     benchmark_standard(filename, iterations, &standard_result);
@@ -288,7 +381,15 @@ int main(int argc, char *argv[])
     benchmark_arena_simd(filename, iterations, &arena_simd_result);
     print_results("Arena+SIMD Optimized", &arena_simd_result);
 
-    print_comparison(&standard_result, &arena_result, &simd_result, &arena_simd_result);
+    printf("\nRunning Arena+SIMD Fully Optimized benchmark...\n");
+    benchmark_arena_simd_opt(filename, iterations, &arena_simd_opt_result);
+    print_results("Arena+SIMD Fully Optimized", &arena_simd_opt_result);
+
+    printf("\nRunning Simple parser benchmark...\n");
+    benchmark_simple(filename, iterations, &simple_result);
+    print_results("Simple Parser", &simple_result);
+
+    print_comparison(&standard_result, &arena_result, &simd_result, &arena_simd_result, &arena_simd_opt_result, &simple_result);
 
     printf("\n=== Benchmark Complete ===\n");
 

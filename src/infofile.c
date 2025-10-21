@@ -82,8 +82,13 @@ int infofile_parse_string(const char *data, size_t len, InfoFile *info) {
                 size_t old_len = strlen(current_value);
                 size_t new_len = strlen(trimmed_content);
                 current_value = realloc(current_value, old_len + new_len + 2);
-                current_value[old_len] = '\n';
-                strcpy(current_value + old_len + 1, trimmed_content);
+                // Only add newline separator if there's already content
+                if (old_len > 0) {
+                    current_value[old_len] = '\n';
+                    strcpy(current_value + old_len + 1, trimmed_content);
+                } else {
+                    strcpy(current_value, trimmed_content);
+                }
                 free(trimmed_content);
             }
             free(trimmed);
