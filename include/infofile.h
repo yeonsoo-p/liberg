@@ -2,22 +2,35 @@
 #define INFOFILE_H
 
 #include <stddef.h>
+#include <arena.h>
 
 /**
- * Represents a key-value pair from an info file
+ * Dual arena allocator for optimized cache locality
+ * Keys (hot) and values (cold) stored separately
  */
 typedef struct {
-    char *key;      /* The key (allocated) */
-    char *value;    /* The value (allocated, may contain newlines for multiline) */
+    Arena key_arena;    /* Hot data - accessed during lookups */
+    Arena value_arena;  /* Cold data - accessed only when found */
+} DualArena;
+
+/**
+ * Represents a key-value pair
+ */
+typedef struct {
+    const char *key;    /* Points into key_arena */
+    const char *value;  /* Points into value_arena */
 } InfoFileEntry;
 
 /**
  * Represents a parsed info file
+ * Uses zero-copy parsing, SIMD whitespace trimming,
+ * SIMD character class detection, and dual-arena layout
  */
 typedef struct {
     InfoFileEntry *entries;  /* Array of entries */
-    size_t count;           /* Number of entries */
-    size_t capacity;        /* Allocated capacity */
+    size_t count;            /* Number of entries */
+    size_t capacity;         /* Allocated capacity */
+    DualArena arena;         /* Dual arena for keys/values */
 } InfoFile;
 
 /**
@@ -41,25 +54,6 @@ int infofile_parse_string(const char *data, size_t len, InfoFile *info);
  * Get a value by key (returns NULL if not found)
  */
 const char *infofile_get(const InfoFile *info, const char *key);
-
-/**
- * Set or update a key-value pair
- * Returns 0 on success, -1 on error
- */
-int infofile_set(InfoFile *info, const char *key, const char *value);
-
-/**
- * Write an InfoFile structure to a file
- * Returns 0 on success, -1 on error
- */
-int infofile_write_file(const char *filename, const InfoFile *info);
-
-/**
- * Write an InfoFile structure to a string buffer (allocates memory)
- * Returns allocated string on success, NULL on error
- * Caller must free the returned string
- */
-char *infofile_write_string(const InfoFile *info);
 
 /**
  * Free all memory associated with an InfoFile structure
