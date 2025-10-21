@@ -25,9 +25,18 @@ set(LIBERG_SOURCES
     src/infofile_arena.c
 )
 
+set(LIBERG_SIMD_SOURCES
+    src/infofile.c
+    src/infofile_arena.c
+    src/infofile_simd.c
+    src/infofile_arena_simd.c
+)
+
 set(LIBERG_HEADERS
     include/infofile.h
     include/infofile_arena.h
+    include/infofile_simd.h
+    include/infofile_arena_simd.h
 )
 
 # Create static library
@@ -36,6 +45,15 @@ add_library(liberg STATIC ${LIBERG_SOURCES} ${LIBERG_HEADERS})
 # Create shared library
 add_library(liberg_shared SHARED ${LIBERG_SOURCES} ${LIBERG_HEADERS})
 set_target_properties(liberg_shared PROPERTIES OUTPUT_NAME liberg)
+
+# Create SIMD-enabled static library
+add_library(liberg_simd STATIC ${LIBERG_SIMD_SOURCES} ${LIBERG_HEADERS})
+target_compile_options(liberg_simd PRIVATE -mavx2)
+
+# Create SIMD-enabled shared library
+add_library(liberg_simd_shared SHARED ${LIBERG_SIMD_SOURCES} ${LIBERG_HEADERS})
+set_target_properties(liberg_simd_shared PROPERTIES OUTPUT_NAME liberg_simd)
+target_compile_options(liberg_simd_shared PRIVATE -mavx2)
 
 # Include directories
 target_include_directories(liberg PUBLIC
@@ -48,20 +66,35 @@ target_include_directories(liberg_shared PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
+target_include_directories(liberg_simd PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
+target_include_directories(liberg_simd_shared PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
 # Test executable
 add_executable(test_infofile test/test_infofile.c)
 target_link_libraries(test_infofile PRIVATE liberg)
 
-# Benchmark executable
+# Correctness test executable (with SIMD support)
+add_executable(test_correctness test/test_correctness.c)
+target_link_libraries(test_correctness PRIVATE liberg_simd)
+
+# Benchmark executable (with SIMD support)
 add_executable(bench_infofile test/bench_infofile.c)
-target_link_libraries(bench_infofile PRIVATE liberg)
+target_link_libraries(bench_infofile PRIVATE liberg_simd)
 
 # Enable testing
 enable_testing()
 add_test(NAME infofile_tests COMMAND test_infofile)
+add_test(NAME correctness_test COMMAND test_correctness)
 
 # Installation rules
-install(TARGETS liberg liberg_shared
+install(TARGETS liberg liberg_shared liberg_simd liberg_simd_shared
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin

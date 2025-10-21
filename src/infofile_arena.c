@@ -16,6 +16,17 @@ static void arena_init(Arena *arena, size_t initial_size) {
     arena->used = 0;
 }
 
+static void arena_ensure_capacity(Arena *arena, size_t total_needed) {
+    if (total_needed > arena->capacity) {
+        size_t new_capacity = arena->capacity;
+        while (new_capacity < total_needed) {
+            new_capacity *= 2;
+        }
+        arena->buffer = realloc(arena->buffer, new_capacity);
+        arena->capacity = new_capacity;
+    }
+}
+
 static void arena_grow(Arena *arena, size_t needed) {
     size_t new_capacity = arena->capacity;
     while (new_capacity - arena->used < needed) {
@@ -107,8 +118,10 @@ int infofile_arena_parse_string(const char *data, size_t len, InfoFileArena *inf
 
         // Skip empty lines and comments (but not during multiline values)
         if (!is_multiline) {
-            char *trimmed = trim_whitespace_arena(&info->arena, line_buffer);
-            if (trimmed[0] == '\0' || trimmed[0] == '#') {
+            // Check without allocating from arena
+            const char *check_ptr = line_buffer;
+            while (isspace((unsigned char)*check_ptr)) check_ptr++;
+            if (*check_ptr == '\0' || *check_ptr == '#') {
                 continue;
             }
         }
@@ -156,11 +169,9 @@ int infofile_arena_parse_string(const char *data, size_t len, InfoFileArena *inf
             is_multiline = false;
         }
 
-        char *trimmed = trim_whitespace_arena(&info->arena, line_buffer);
-
-        // Parse key-value separator
-        char *separator = strchr(trimmed, '=');
-        char *colon = strchr(trimmed, ':');
+        // Parse key-value separator directly on line_buffer to avoid multiple arena allocations
+        char *separator = strchr(line_buffer, '=');
+        char *colon = strchr(line_buffer, ':');
 
         bool use_equals = false;
         if (separator != NULL && colon != NULL) {
@@ -176,7 +187,7 @@ int infofile_arena_parse_string(const char *data, size_t len, InfoFileArena *inf
         if (use_equals) {
             // Single-line format
             *separator = '\0';
-            current_key = trim_whitespace_arena(&info->arena, trimmed);
+            current_key = trim_whitespace_arena(&info->arena, line_buffer);
             const char *value = trim_whitespace_arena(&info->arena, separator + 1);
 
             ensure_capacity(info);
@@ -187,7 +198,7 @@ int infofile_arena_parse_string(const char *data, size_t len, InfoFileArena *inf
         } else {
             // Multi-line format
             *colon = '\0';
-            current_key = trim_whitespace_arena(&info->arena, trimmed);
+            current_key = trim_whitespace_arena(&info->arena, line_buffer);
 
             char *after_colon = trim_whitespace_arena(&info->arena, colon + 1);
 
@@ -251,6 +262,12 @@ int infofile_arena_parse_file(const char *filename, InfoFileArena *info) {
     size_t bytes_read = fread(buffer, 1, file_size, fp);
     buffer[bytes_read] = '\0';
     fclose(fp);
+
+    // Pre-grow arena to avoid reallocation during parsing
+    // Estimate: file size * 2 should be enough for trimmed strings
+    // This must be done BEFORE any pointers into the arena are stored
+    size_t estimated_arena_size = file_size * 2;
+    arena_ensure_capacity(&info->arena, estimated_arena_size);
 
     int result = infofile_arena_parse_string(buffer, bytes_read, info);
     free(buffer);
