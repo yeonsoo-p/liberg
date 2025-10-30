@@ -1,4 +1,4 @@
-#include <immintrin.h>  // AVX2 intrinsics
+#include <immintrin.h> // AVX2 intrinsics
 #include <stddef.h>
 #include <stdint.h>
 
@@ -6,13 +6,12 @@
  * SIMD-optimized strlen using AVX2
  * Processes 32 bytes at a time to find null terminator
  */
-size_t strlen_simd(const char *str)
-{
-    const char *s = str;
+size_t strlen_simd(const char* str) {
+    const char* s = str;
 
     /* Handle unaligned start - process bytes until 32-byte aligned */
-    uintptr_t addr = (uintptr_t)s;
-    size_t misalignment = addr & 31;
+    uintptr_t addr         = (uintptr_t)s;
+    size_t    misalignment = addr & 31;
 
     if (misalignment != 0) {
         /* Process bytes one at a time until aligned */
@@ -29,7 +28,7 @@ size_t strlen_simd(const char *str)
 
     while (1) {
         /* Load 32 bytes */
-        __m256i chunk = _mm256_load_si256((__m256i *)s);
+        __m256i chunk = _mm256_load_si256((__m256i*)s);
 
         /* Compare with zero */
         __m256i cmp = _mm256_cmpeq_epi8(chunk, zero);
@@ -39,7 +38,7 @@ size_t strlen_simd(const char *str)
 
         if (mask != 0) {
             /* Found a zero byte - find which one */
-            int pos = __builtin_ctz(mask);  // Count trailing zeros
+            int pos = __builtin_ctz(mask); // Count trailing zeros
             return (s - str) + pos;
         }
 
@@ -54,14 +53,13 @@ size_t strlen_simd(const char *str)
  * Note: For small sizes (<= 64 bytes), falls back to simple copy
  * to avoid AVX2 overhead
  */
-void *memcpy_simd(void *dest, const void *src, size_t n)
-{
-    char *d = (char *)dest;
-    const char *s = (const char *)src;
+void* memcpy_simd(void* dest, const void* src, size_t n) {
+    char*       d = (char*)dest;
+    const char* s = (const char*)src;
 
     /* For small copies, use simple byte copy (faster due to less overhead) */
     if (n <= 64) {
-        char *d_end = d + n;
+        char* d_end = d + n;
         while (d < d_end) {
             *d++ = *s++;
         }
@@ -72,7 +70,8 @@ void *memcpy_simd(void *dest, const void *src, size_t n)
     size_t misalignment = (uintptr_t)d & 31;
     if (misalignment != 0) {
         size_t to_align = 32 - misalignment;
-        if (to_align > n) to_align = n;
+        if (to_align > n)
+            to_align = n;
 
         for (size_t i = 0; i < to_align; i++) {
             *d++ = *s++;
@@ -82,8 +81,8 @@ void *memcpy_simd(void *dest, const void *src, size_t n)
 
     /* Process 32 bytes at a time with AVX2 */
     while (n >= 32) {
-        __m256i chunk = _mm256_loadu_si256((const __m256i *)s);
-        _mm256_store_si256((__m256i *)d, chunk);
+        __m256i chunk = _mm256_loadu_si256((const __m256i*)s);
+        _mm256_store_si256((__m256i*)d, chunk);
 
         d += 32;
         s += 32;
@@ -106,23 +105,22 @@ void *memcpy_simd(void *dest, const void *src, size_t n)
  *
  * Optimized for small strings (common case in parsing)
  */
-void *memcpy_simd_unaligned(void *dest, const void *src, size_t n)
-{
-    char *d = (char *)dest;
-    const char *s = (const char *)src;
+void* memcpy_simd_unaligned(void* dest, const void* src, size_t n) {
+    char*       d = (char*)dest;
+    const char* s = (const char*)src;
 
     /* For very small copies, use direct assignment (fastest) */
     if (n <= 16) {
         /* Unrolled loop for small sizes - overlapping copy trick */
         if (n >= 8) {
-            *((uint64_t *)d) = *((uint64_t *)s);
-            *((uint64_t *)(d + n - 8)) = *((uint64_t *)(s + n - 8));
+            *((uint64_t*)d)           = *((uint64_t*)s);
+            *((uint64_t*)(d + n - 8)) = *((uint64_t*)(s + n - 8));
         } else if (n >= 4) {
-            *((uint32_t *)d) = *((uint32_t *)s);
-            *((uint32_t *)(d + n - 4)) = *((uint32_t *)(s + n - 4));
+            *((uint32_t*)d)           = *((uint32_t*)s);
+            *((uint32_t*)(d + n - 4)) = *((uint32_t*)(s + n - 4));
         } else if (n >= 2) {
-            *((uint16_t *)d) = *((uint16_t *)s);
-            *((uint16_t *)(d + n - 2)) = *((uint16_t *)(s + n - 2));
+            *((uint16_t*)d)           = *((uint16_t*)s);
+            *((uint16_t*)(d + n - 2)) = *((uint16_t*)(s + n - 2));
         } else if (n == 1) {
             *d = *s;
         }
@@ -139,8 +137,8 @@ void *memcpy_simd_unaligned(void *dest, const void *src, size_t n)
 
     /* For large copies, use AVX2 */
     while (n >= 32) {
-        __m256i chunk = _mm256_loadu_si256((const __m256i *)s);
-        _mm256_storeu_si256((__m256i *)d, chunk);
+        __m256i chunk = _mm256_loadu_si256((const __m256i*)s);
+        _mm256_storeu_si256((__m256i*)d, chunk);
 
         d += 32;
         s += 32;
@@ -149,8 +147,8 @@ void *memcpy_simd_unaligned(void *dest, const void *src, size_t n)
 
     /* Handle remaining bytes with overlapping copy */
     if (n > 0) {
-        __m256i chunk = _mm256_loadu_si256((const __m256i *)(s + n - 32));
-        _mm256_storeu_si256((__m256i *)(d + n - 32), chunk);
+        __m256i chunk = _mm256_loadu_si256((const __m256i*)(s + n - 32));
+        _mm256_storeu_si256((__m256i*)(d + n - 32), chunk);
     }
 
     return dest;
