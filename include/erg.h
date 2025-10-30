@@ -5,14 +5,10 @@
 #include <stdint.h>
 #include <arena.h>
 #include <infofile.h>
-#include <thread_pool.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* Minimum samples per thread for adaptive threading */
-#define MIN_SAMPLES_PER_THREAD 50000
 
 /**
  * ERG (CarMaker binary results) file parser
@@ -81,10 +77,6 @@ typedef struct {
 #else
     int           file_descriptor;/* POSIX file descriptor */
 #endif
-
-    /* Threading support */
-    ThreadPool*   thread_pool;    /* User-provided thread pool (NULL = single-threaded) */
-    int           num_threads;    /* Number of threads to use (decided in erg_init) */
 } ERG;
 
 /**
@@ -93,9 +85,8 @@ typedef struct {
  *
  * @param erg Pointer to ERG structure
  * @param erg_file_path Path to .erg file
- * @param pool Thread pool for multi-threaded extraction (NULL = single-threaded)
  */
-void erg_init(ERG* erg, const char* erg_file_path, ThreadPool* pool);
+void erg_init(ERG* erg, const char* erg_file_path);
 
 /**
  * Parse the ERG file and load all data
@@ -154,6 +145,34 @@ int erg_find_signal_index(const ERG* erg, const char* signal_name);
  * Free all memory associated with ERG structure
  */
 void erg_free(ERG* erg);
+
+/**
+ * Batch extract multiple signals (sequential)
+ * Returns raw typed data for each signal
+ *
+ * @param erg Pointer to ERG structure
+ * @param signal_names Array of signal names to extract
+ * @param num_signals Number of signals to extract
+ * @param out_signals Array of output pointers (will be filled with newly allocated arrays)
+ *                    Caller must free each non-NULL pointer
+ *                    Each pointer will be NULL if signal not found
+ */
+void erg_get_signals_batch(const ERG* erg, const char** signal_names,
+                           size_t num_signals, void** out_signals);
+
+/**
+ * Batch extract multiple signals as double (sequential)
+ * Converts all signals to double and applies scaling
+ *
+ * @param erg Pointer to ERG structure
+ * @param signal_names Array of signal names to extract
+ * @param num_signals Number of signals to extract
+ * @param out_signals Array of output double* pointers
+ *                    Caller must free each non-NULL pointer
+ *                    Each pointer will be NULL if signal not found
+ */
+void erg_get_signals_batch_as_double(const ERG* erg, const char** signal_names,
+                                     size_t num_signals, double** out_signals);
 
 #ifdef __cplusplus
 }

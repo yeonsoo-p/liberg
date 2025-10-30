@@ -78,7 +78,7 @@ static double parse_double(const char* str) {
 }
 
 
-void erg_init(ERG* erg, const char* erg_file_path, ThreadPool* pool) {
+void erg_init(ERG* erg, const char* erg_file_path) {
     memset(erg, 0, sizeof(ERG));
 
     /* Initialize arena for metadata strings (64KB initial, grows as needed) */
@@ -103,10 +103,6 @@ void erg_init(ERG* erg, const char* erg_file_path, ThreadPool* pool) {
 #else
     erg->file_descriptor = -1;
 #endif
-
-    /* Store thread pool reference (adaptive thread count decided after parsing) */
-    erg->thread_pool = pool;
-    erg->num_threads = 1;  /* Default to single-threaded, updated in erg_parse() */
 }
 
 void erg_parse(ERG* erg) {
@@ -320,13 +316,6 @@ void erg_parse(ERG* erg) {
     }
 #endif
 
-    /* Adaptive threading: decide how many threads to use based on sample count */
-    if (erg->thread_pool == NULL || erg->sample_count < MIN_SAMPLES_PER_THREAD) {
-        erg->num_threads = 1;  /* Single-threaded */
-    } else {
-        erg->num_threads = 2;  /* Use 2 threads for now */
-        /* Future: more sophisticated logic based on sample_count, signal_count, pool size */
-    }
 }
 
 int erg_find_signal_index(const ERG* erg, const char* signal_name) {
@@ -453,24 +442,14 @@ static void extract_signal_scalar(const uint8_t* row_data, uint8_t* signal_data,
 }
 
 /* ============================================================================
- * MULTI-THREADED EXTRACTION INFRASTRUCTURE
+ * EXTRACTION INFRASTRUCTURE
  * ============================================================================ */
 
-/* Thread work structure */
-typedef struct {
-    const uint8_t* row_data;
-    uint8_t*       signal_data;
-    size_t         start_sample;
-    size_t         end_sample;
-    size_t         signal_offset;
-    size_t         element_size;
-    size_t         row_size;
-} ExtractWork;
-
 /* Generic extraction that chooses SIMD or scalar based on element size */
-static void extract_signal_generic(const uint8_t* row_data, uint8_t* signal_data,
-                                   size_t start_sample, size_t end_sample,
-                                   size_t signal_offset, size_t element_size, size_t row_size) {
+/* Non-static to allow usage in erg_batch_thread.c */
+void extract_signal_generic(const uint8_t* row_data, uint8_t* signal_data,
+                            size_t start_sample, size_t end_sample,
+                            size_t signal_offset, size_t element_size, size_t row_size) {
     size_t         sample_count = end_sample - start_sample;
     const uint8_t* src          = row_data + start_sample * row_size;
     uint8_t*       dest         = signal_data + start_sample * element_size;
@@ -489,15 +468,6 @@ static void extract_signal_generic(const uint8_t* row_data, uint8_t* signal_data
         extract_signal_scalar(src, dest, sample_count, signal_offset, element_size, row_size);
         break;
     }
-}
-
-/* Worker function for thread pool */
-static void* extract_worker_pool(void* arg) {
-    ExtractWork* work = (ExtractWork*)arg;
-    extract_signal_generic(work->row_data, work->signal_data,
-                          work->start_sample, work->end_sample,
-                          work->signal_offset, work->element_size, work->row_size);
-    return NULL;
 }
 
 /* ============================================================================
@@ -541,49 +511,9 @@ void* erg_get_signal(const ERG* erg, const char* signal_name) {
     /* Point to the start of the data region in the mapped file */
     const uint8_t* row_data = (const uint8_t*)erg->mapped_data + erg->data_offset;
 
-    /* Check if we should use threading (decision made in erg_parse) */
-    if (erg->num_threads > 1 && erg->thread_pool) {
-        /* Multi-threaded extraction using thread pool */
-        int num_threads = erg->num_threads;
-
-        /* Prepare work items for each thread */
-        ExtractWork* work = malloc(num_threads * sizeof(ExtractWork));
-        void** work_args = malloc(num_threads * sizeof(void*));
-
-        if (!work || !work_args) {
-            fprintf(stderr, "FATAL: Failed to allocate work array\n");
-            free(result);
-            free(work);
-            free(work_args);
-            exit(1);
-        }
-
-        /* Divide work among threads */
-        size_t samples_per_thread = erg->sample_count / num_threads;
-        size_t remainder = erg->sample_count % num_threads;
-
-        for (int i = 0; i < num_threads; i++) {
-            work[i].row_data = row_data;
-            work[i].signal_data = (uint8_t*)result;
-            work[i].start_sample = i * samples_per_thread + (i < (int)remainder ? i : remainder);
-            work[i].end_sample = work[i].start_sample + samples_per_thread + (i < (int)remainder ? 1 : 0);
-            work[i].signal_offset = offset;
-            work[i].element_size = sig->type_size;
-            work[i].row_size = erg->row_size;
-            work_args[i] = &work[i];
-        }
-
-        /* Submit work to thread pool and wait for completion */
-        thread_pool_submit(erg->thread_pool, extract_worker_pool, work_args, num_threads);
-        thread_pool_wait(erg->thread_pool);
-
-        free(work);
-        free(work_args);
-    } else {
-        /* Single-threaded extraction */
-        extract_signal_generic(row_data, (uint8_t*)result, 0, erg->sample_count,
-                             offset, sig->type_size, erg->row_size);
-    }
+    /* Always use single-threaded extraction */
+    extract_signal_generic(row_data, (uint8_t*)result, 0, erg->sample_count,
+                          offset, sig->type_size, erg->row_size);
 
     return result;
 }
@@ -709,4 +639,173 @@ void erg_free(ERG* erg) {
 
     erg->signal_count = 0;
     erg->sample_count = 0;
+}
+
+/* ============================================================================
+ * BATCH EXTRACTION API (Sequential)
+ * ============================================================================ */
+
+void erg_get_signals_batch(const ERG* erg, const char** signal_names,
+                           size_t num_signals, void** out_signals) {
+    if (!erg || !signal_names || !out_signals || num_signals == 0) {
+        return;
+    }
+
+    /* Initialize all output pointers to NULL */
+    for (size_t i = 0; i < num_signals; i++) {
+        out_signals[i] = NULL;
+    }
+
+    /* Handle empty data case */
+    if (erg->sample_count == 0) {
+        return;
+    }
+
+    /* Memory-mapped data check */
+    if (!erg->mapped_data) {
+        fprintf(stderr, "FATAL: ERG file not memory-mapped\n");
+        exit(1);
+    }
+
+    const uint8_t* row_data = (const uint8_t*)erg->mapped_data + erg->data_offset;
+
+    /* Extract each signal sequentially */
+    for (size_t i = 0; i < num_signals; i++) {
+        int signal_index = erg_find_signal_index(erg, signal_names[i]);
+        if (signal_index < 0) {
+            continue;  /* Signal not found, keep NULL */
+        }
+
+        ERGSignal* sig = &erg->signals[signal_index];
+
+        /* Allocate output array */
+        void* result = malloc(erg->sample_count * sig->type_size);
+        if (!result) {
+            fprintf(stderr, "FATAL: Failed to allocate signal array for %s (%zu bytes)\n",
+                    signal_names[i], erg->sample_count * sig->type_size);
+            exit(1);
+        }
+
+        /* Calculate offset for this signal */
+        size_t offset = 0;
+        for (int j = 0; j < signal_index; j++) {
+            offset += erg->signals[j].type_size;
+        }
+
+        /* Extract signal using SIMD */
+        extract_signal_generic(row_data, (uint8_t*)result, 0, erg->sample_count,
+                              offset, sig->type_size, erg->row_size);
+
+        out_signals[i] = result;
+    }
+}
+
+void erg_get_signals_batch_as_double(const ERG* erg, const char** signal_names,
+                                     size_t num_signals, double** out_signals) {
+    if (!erg || !signal_names || !out_signals || num_signals == 0) {
+        return;
+    }
+
+    /* Initialize all output pointers to NULL */
+    for (size_t i = 0; i < num_signals; i++) {
+        out_signals[i] = NULL;
+    }
+
+    /* Handle empty data case */
+    if (erg->sample_count == 0) {
+        return;
+    }
+
+    /* Memory-mapped data check */
+    if (!erg->mapped_data) {
+        fprintf(stderr, "FATAL: ERG file not memory-mapped\n");
+        exit(1);
+    }
+
+    const uint8_t* row_data = (const uint8_t*)erg->mapped_data + erg->data_offset;
+
+    /* Extract and convert each signal */
+    for (size_t i = 0; i < num_signals; i++) {
+        int signal_index = erg_find_signal_index(erg, signal_names[i]);
+        if (signal_index < 0) {
+            continue;  /* Signal not found, keep NULL */
+        }
+
+        ERGSignal* sig = &erg->signals[signal_index];
+
+        /* First extract raw data */
+        void* raw_data = malloc(erg->sample_count * sig->type_size);
+        if (!raw_data) {
+            fprintf(stderr, "FATAL: Failed to allocate raw signal array for %s\n",
+                    signal_names[i]);
+            exit(1);
+        }
+
+        /* Calculate offset for this signal */
+        size_t offset = 0;
+        for (int j = 0; j < signal_index; j++) {
+            offset += erg->signals[j].type_size;
+        }
+
+        /* Extract signal using SIMD */
+        extract_signal_generic(row_data, (uint8_t*)raw_data, 0, erg->sample_count,
+                              offset, sig->type_size, erg->row_size);
+
+        /* Allocate double array */
+        double* result = malloc(erg->sample_count * sizeof(double));
+        if (!result) {
+            fprintf(stderr, "FATAL: Failed to allocate double array for %s\n",
+                    signal_names[i]);
+            free(raw_data);
+            exit(1);
+        }
+
+        /* Convert to double with scaling */
+        for (size_t j = 0; j < erg->sample_count; j++) {
+            double value = 0.0;
+
+            switch (sig->type) {
+            case ERG_FLOAT:
+                value = (double)((float*)raw_data)[j];
+                break;
+            case ERG_DOUBLE:
+                value = ((double*)raw_data)[j];
+                break;
+            case ERG_LONGLONG:
+                value = (double)((int64_t*)raw_data)[j];
+                break;
+            case ERG_ULONGLONG:
+                value = (double)((uint64_t*)raw_data)[j];
+                break;
+            case ERG_INT:
+                value = (double)((int32_t*)raw_data)[j];
+                break;
+            case ERG_UINT:
+                value = (double)((uint32_t*)raw_data)[j];
+                break;
+            case ERG_SHORT:
+                value = (double)((int16_t*)raw_data)[j];
+                break;
+            case ERG_USHORT:
+                value = (double)((uint16_t*)raw_data)[j];
+                break;
+            case ERG_CHAR:
+                value = (double)((int8_t*)raw_data)[j];
+                break;
+            case ERG_UCHAR:
+                value = (double)((uint8_t*)raw_data)[j];
+                break;
+            case ERG_BYTES:
+            default:
+                value = 0.0;
+                break;
+            }
+
+            /* Apply scaling */
+            result[j] = value * sig->factor + sig->offset;
+        }
+
+        free(raw_data);
+        out_signals[i] = result;
+    }
 }
