@@ -24,6 +24,11 @@
 
 void infofile_init(InfoFile* info) {
     info->entries  = malloc(INITIAL_CAPACITY * sizeof(InfoFileEntry));
+    if (!info->entries) {
+        fprintf(stderr, "FATAL: Failed to allocate initial entries array (%zu bytes)\n",
+                INITIAL_CAPACITY * sizeof(InfoFileEntry));
+        exit(1);
+    }
     info->count    = 0;
     info->capacity = INITIAL_CAPACITY;
     arena_init(&info->arena.key_arena, INITIAL_ARENA_SIZE);
@@ -32,8 +37,15 @@ void infofile_init(InfoFile* info) {
 
 static void ensure_capacity(InfoFile* info) {
     if (info->count >= info->capacity) {
-        info->capacity *= 2;
-        info->entries = realloc(info->entries, info->capacity * sizeof(InfoFileEntry));
+        size_t new_capacity = info->capacity * 2;
+        InfoFileEntry* new_entries = realloc(info->entries, new_capacity * sizeof(InfoFileEntry));
+        if (!new_entries) {
+            fprintf(stderr, "FATAL: Failed to reallocate entries array (%zu bytes)\n",
+                    new_capacity * sizeof(InfoFileEntry));
+            exit(1);
+        }
+        info->entries = new_entries;
+        info->capacity = new_capacity;
     }
 }
 
@@ -252,7 +264,7 @@ static inline void simd_find_special_chars(const char* str, const char* str_end,
  * Main parsing function with all 4 optimizations
  * ============================================================================ */
 
-int infofile_parse_string(const char* data, size_t len, InfoFile* info) {
+void infofile_parse_string(const char* data, size_t len, InfoFile* info) {
     const char* ptr = data;
     const char* end = data + len;
 
@@ -310,7 +322,13 @@ int infofile_parse_string(const char* data, size_t len, InfoFile* info) {
                         size_t new_size = value_buffer_size ? value_buffer_size * 2 : 1024;
                         while (new_size < value_buffer_used + needed)
                             new_size *= 2;
-                        value_buffer      = realloc(value_buffer, new_size);
+                        char* new_buffer = realloc(value_buffer, new_size);
+                        if (!new_buffer) {
+                            fprintf(stderr, "FATAL: Failed to reallocate value buffer (%zu bytes)\n", new_size);
+                            free(value_buffer);
+                            exit(1);
+                        }
+                        value_buffer      = new_buffer;
                         value_buffer_size = new_size;
                     }
 
@@ -392,10 +410,20 @@ int infofile_parse_string(const char* data, size_t len, InfoFile* info) {
                     if (!value_buffer) {
                         value_buffer_size = 1024;
                         value_buffer      = malloc(value_buffer_size);
+                        if (!value_buffer) {
+                            fprintf(stderr, "FATAL: Failed to allocate value buffer (%zu bytes)\n", value_buffer_size);
+                            exit(1);
+                        }
                     }
                     if (content_len + 1 > value_buffer_size) {
                         value_buffer_size = content_len + 1024;
-                        value_buffer      = realloc(value_buffer, value_buffer_size);
+                        char* new_buffer  = realloc(value_buffer, value_buffer_size);
+                        if (!new_buffer) {
+                            fprintf(stderr, "FATAL: Failed to reallocate value buffer (%zu bytes)\n", value_buffer_size);
+                            free(value_buffer);
+                            exit(1);
+                        }
+                        value_buffer = new_buffer;
                     }
                     memcpy(value_buffer, after_start, content_len);
                     value_buffer[content_len] = '\0';
@@ -431,14 +459,13 @@ int infofile_parse_string(const char* data, size_t len, InfoFile* info) {
     if (value_buffer) {
         free(value_buffer);
     }
-
-    return 0;
 }
 
-int infofile_parse_file(const char* filename, InfoFile* info) {
+void infofile_parse_file(const char* filename, InfoFile* info) {
     FILE* fp = fopen(filename, "rb");
     if (!fp) {
-        return -1;
+        fprintf(stderr, "FATAL: Failed to open file '%s'\n", filename);
+        exit(1);
     }
 
     fseek(fp, 0, SEEK_END);
@@ -448,8 +475,16 @@ int infofile_parse_file(const char* filename, InfoFile* info) {
     // Pre-allocate entries array based on file size
     size_t estimated_entries = file_size / 150;
     if (estimated_entries > info->capacity) {
-        info->capacity = estimated_entries;
-        info->entries  = realloc(info->entries, info->capacity * sizeof(InfoFileEntry));
+        size_t new_capacity = estimated_entries;
+        InfoFileEntry* new_entries = realloc(info->entries, new_capacity * sizeof(InfoFileEntry));
+        if (!new_entries) {
+            fprintf(stderr, "FATAL: Failed to reallocate entries array (%zu bytes)\n",
+                    new_capacity * sizeof(InfoFileEntry));
+            fclose(fp);
+            exit(1);
+        }
+        info->entries = new_entries;
+        info->capacity = new_capacity;
     }
 
     // Pre-allocate both arenas to avoid reallocation during parsing
@@ -462,18 +497,17 @@ int infofile_parse_file(const char* filename, InfoFile* info) {
 
     char* buffer = malloc(file_size + 1);
     if (!buffer) {
+        fprintf(stderr, "FATAL: Failed to allocate file buffer (%ld bytes)\n", file_size + 1);
         fclose(fp);
-        return -1;
+        exit(1);
     }
 
     size_t bytes_read  = fread(buffer, 1, file_size, fp);
     buffer[bytes_read] = '\0';
     fclose(fp);
 
-    int result = infofile_parse_string(buffer, bytes_read, info);
+    infofile_parse_string(buffer, bytes_read, info);
     free(buffer);
-
-    return result;
 }
 
 const char* infofile_get(const InfoFile* info, const char* key) {

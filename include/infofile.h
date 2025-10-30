@@ -40,15 +40,15 @@ void infofile_init(InfoFile *info);
 
 /**
  * Parse an info file from a file path
- * Returns 0 on success, -1 on error
+ * Exits on error with descriptive message
  */
-int infofile_parse_file(const char *filename, InfoFile *info);
+void infofile_parse_file(const char *filename, InfoFile *info);
 
 /**
  * Parse an info file from a string buffer
- * Returns 0 on success, -1 on error
+ * Exits on error with descriptive message
  */
-int infofile_parse_string(const char *data, size_t len, InfoFile *info);
+void infofile_parse_string(const char *data, size_t len, InfoFile *info);
 
 /**
  * Get a value by key (returns NULL if not found)

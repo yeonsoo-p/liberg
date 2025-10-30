@@ -5,16 +5,23 @@
 /**
  * SIMD-optimized strlen using AVX2
  * Processes 32 bytes at a time to find null terminator
+ *
+ * Uses three-phase approach:
+ * 1. Alignment loop: Process bytes until aligned OR null found (scalar)
+ * 2. Main loop: Process aligned 32-byte chunks (fast aligned loads)
+ * 3. Safe throughout: Uses unaligned loads to avoid page boundary issues
  */
 size_t strlen_simd(const char* str) {
     const char* s = str;
+    __m256i zero = _mm256_setzero_si256();
 
-    /* Handle unaligned start - process bytes until 32-byte aligned */
+    /* Phase 1: Handle unaligned start - process bytes until 32-byte aligned
+     * IMPORTANT: Check for null terminator to avoid reading past string end */
     uintptr_t addr         = (uintptr_t)s;
     size_t    misalignment = addr & 31;
 
     if (misalignment != 0) {
-        /* Process bytes one at a time until aligned */
+        /* Process bytes one at a time until aligned OR null found */
         while (((uintptr_t)s & 31) != 0) {
             if (*s == '\0') {
                 return s - str;
@@ -23,12 +30,13 @@ size_t strlen_simd(const char* str) {
         }
     }
 
-    /* Now s is 32-byte aligned - use AVX2 to process 32 bytes at a time */
-    __m256i zero = _mm256_setzero_si256();
-
+    /* Phase 2: Main loop - s is now 32-byte aligned
+     * Use aligned loads for better performance, but we still use unaligned
+     * loads to be safe near page boundaries */
     while (1) {
-        /* Load 32 bytes */
-        __m256i chunk = _mm256_load_si256((__m256i*)s);
+        /* Use unaligned load to be safe - compiler/CPU will optimize if aligned
+         * This prevents segfaults when crossing page boundaries */
+        __m256i chunk = _mm256_loadu_si256((const __m256i*)s);
 
         /* Compare with zero */
         __m256i cmp = _mm256_cmpeq_epi8(chunk, zero);
@@ -145,10 +153,11 @@ void* memcpy_simd_unaligned(void* dest, const void* src, size_t n) {
         n -= 32;
     }
 
-    /* Handle remaining bytes with overlapping copy */
-    if (n > 0) {
-        __m256i chunk = _mm256_loadu_si256((const __m256i*)(s + n - 32));
-        _mm256_storeu_si256((__m256i*)(d + n - 32), chunk);
+    /* Handle remaining bytes (0-31 bytes left)
+     * Use scalar copy for safety - trying to use SIMD with overlapping copy
+     * would read out of bounds when n < 32 (e.g., n=20 would read from s-12) */
+    for (size_t i = 0; i < n; i++) {
+        d[i] = s[i];
     }
 
     return dest;
