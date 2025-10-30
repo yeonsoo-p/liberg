@@ -4,6 +4,26 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <time.h>
+#endif
+
+/* Timing utility - returns time in nanoseconds */
+static double get_time_ns(void) {
+#ifdef _WIN32
+    LARGE_INTEGER frequency, counter;
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&counter);
+    return (double)(counter.QuadPart * 1000000000.0) / frequency.QuadPart;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000000000.0 + ts.tv_nsec;
+#endif
+}
+
 // Test cases for road.rd5 (large file with ~385K entries)
 typedef struct {
     const char* key;
@@ -220,6 +240,78 @@ void test_file_comprehensive(const char* filename, const TestCase* test_cases, s
     printf("[OK] All %zu test cases passed for %s\n", passed, file_desc);
 }
 
+void test_file_performance(const char* filename, const char* file_desc) {
+    printf("\nPerformance Benchmark for %s...\n", file_desc);
+
+    const int ITERATIONS = 5;
+    double total_parse_time = 0.0;
+    double total_lookup_time = 0.0;
+    size_t entry_count = 0;
+
+    /* Benchmark parsing */
+    printf("  Parsing benchmark:\n");
+    for (int iter = 0; iter < ITERATIONS; iter++) {
+        InfoFile info;
+        infofile_init(&info);
+
+        double start = get_time_ns();
+        infofile_parse_file(filename, &info);
+        double end = get_time_ns();
+        double elapsed_ns = end - start;
+
+        total_parse_time += elapsed_ns;
+        entry_count = info.count;
+
+        printf("    Iteration %d: %.2f ms (%.0f ns) - %zu entries\n",
+               iter + 1, elapsed_ns / 1000000.0, elapsed_ns, info.count);
+
+        infofile_free(&info);
+    }
+
+    double avg_parse_time = total_parse_time / ITERATIONS;
+    printf("    Average: %.2f ms (%.0f ns)\n", avg_parse_time / 1000000.0, avg_parse_time);
+    printf("    Throughput: %.0f entries/sec\n", entry_count / (avg_parse_time / 1000000000.0));
+
+    /* Benchmark lookups (parse once, then do multiple lookups) */
+    InfoFile info;
+    infofile_init(&info);
+    infofile_parse_file(filename, &info);
+
+    printf("\n  Lookup benchmark (%zu entries):\n", info.count);
+
+    /* Test lookups on different positions (beginning, middle, end) */
+    const char* test_keys[3];
+    const char* test_descs[3] = {"beginning", "middle", "end"};
+
+    if (info.count > 0) {
+        test_keys[0] = info.entries[0].key;
+        test_keys[1] = info.entries[info.count / 2].key;
+        test_keys[2] = info.entries[info.count - 1].key;
+
+        for (int pos = 0; pos < 3; pos++) {
+            total_lookup_time = 0.0;
+
+            for (int iter = 0; iter < ITERATIONS * 1000; iter++) {
+                double start = get_time_ns();
+                const char* value = infofile_get(&info, test_keys[pos]);
+                double end = get_time_ns();
+
+                total_lookup_time += (end - start);
+
+                /* Use value to prevent optimization */
+                if (!value) break;
+            }
+
+            double avg_lookup_time = total_lookup_time / (ITERATIONS * 1000);
+            printf("    %s key: %.0f ns/lookup (%.2f us)\n",
+                   test_descs[pos], avg_lookup_time, avg_lookup_time / 1000.0);
+        }
+    }
+
+    infofile_free(&info);
+    printf("[OK] Performance benchmark completed\n");
+}
+
 int main(int argc, char* argv[]) {
     printf("=== InfoFile Parser Comprehensive Test ===\n\n");
 
@@ -271,6 +363,7 @@ int main(int argc, char* argv[]) {
     // Test road.rd5 if available
     if (road_file) {
         test_file_comprehensive(road_file, road_test_cases, NUM_ROAD_CASES, "road.rd5 (large file)");
+        test_file_performance(road_file, "road.rd5 (large file)");
     } else {
         printf("\n[WARNING] road.rd5 not found - skipping large file tests\n");
         printf("  (Place file in example/road.rd5 or pass path as first argument)\n");
@@ -279,6 +372,7 @@ int main(int argc, char* argv[]) {
     // Test result.erg.info if available
     if (erg_file) {
         test_file_comprehensive(erg_file, erg_test_cases, NUM_ERG_CASES, "result.erg.info (detailed metadata)");
+        test_file_performance(erg_file, "result.erg.info (detailed metadata)");
     } else {
         printf("\n[WARNING] result.erg.info not found - skipping metadata tests\n");
         printf("  (Place file in example/result.erg.info or pass path as second argument)\n");

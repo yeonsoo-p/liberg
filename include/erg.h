@@ -3,11 +3,16 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <arena.h>
 #include <infofile.h>
+#include <thread_pool.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Minimum samples per thread for adaptive threading */
+#define MIN_SAMPLES_PER_THREAD 50000
 
 /**
  * ERG (CarMaker binary results) file parser
@@ -48,6 +53,8 @@ typedef struct {
 
 /**
  * Main ERG file structure
+ * Uses memory-mapped I/O for efficient access without keeping entire file in memory
+ * Uses arena allocator for metadata strings for better performance
  */
 typedef struct {
     char*         erg_path;       /* Path to .erg file */
@@ -56,19 +63,39 @@ typedef struct {
     ERGSignal*    signals;        /* Array of signal metadata */
     size_t        signal_count;   /* Number of signals */
 
-    void*         raw_data;       /* Raw binary data buffer */
-    size_t        data_size;      /* Size of data buffer */
+    size_t        data_offset;    /* Offset to data in file (after header) */
+    size_t        data_size;      /* Size of data in file */
     size_t        sample_count;   /* Number of samples/rows */
 
     int           little_endian;  /* 1 if little-endian, 0 if big-endian */
     size_t        row_size;       /* Size of one data row in bytes */
+
+    Arena         metadata_arena; /* Arena for all string allocations */
+
+    /* Memory-mapped file data */
+    void*         mapped_data;    /* Memory-mapped file data (NULL if not mapped) */
+    size_t        mapped_size;    /* Size of mapped region */
+#ifdef _WIN32
+    void*         file_handle;    /* Windows file handle (HANDLE) */
+    void*         mapping_handle; /* Windows mapping handle (HANDLE) */
+#else
+    int           file_descriptor;/* POSIX file descriptor */
+#endif
+
+    /* Threading support */
+    ThreadPool*   thread_pool;    /* User-provided thread pool (NULL = single-threaded) */
+    int           num_threads;    /* Number of threads to use (decided in erg_init) */
 } ERG;
 
 /**
  * Initialize an ERG structure
  * Does not load data - call erg_parse() to load
+ *
+ * @param erg Pointer to ERG structure
+ * @param erg_file_path Path to .erg file
+ * @param pool Thread pool for multi-threaded extraction (NULL = single-threaded)
  */
-void erg_init(ERG* erg, const char* erg_file_path);
+void erg_init(ERG* erg, const char* erg_file_path, ThreadPool* pool);
 
 /**
  * Parse the ERG file and load all data
@@ -78,27 +105,32 @@ void erg_init(ERG* erg, const char* erg_file_path);
 void erg_parse(ERG* erg);
 
 /**
- * Get signal data by name
- * Returns pointer to data array and sets length
- * Data is in raw binary format - caller must cast based on signal type
- *
- * @param erg Pointer to ERG structure
- * @param signal_name Name of signal (e.g., "Time", "Car.v")
- * @param length Output parameter for array length (number of samples)
- * @return Pointer to raw data array, NULL if signal not found
- */
-const void* erg_get_signal(const ERG* erg, const char* signal_name, size_t* length);
-
-/**
- * Get signal data as double array (with scaling applied)
+ * Get signal data by name (returns raw typed data)
+ * Returns data in its native type (float*, double*, int*, etc.)
+ * Uses memory-mapped I/O with automatic multi-threading when beneficial
+ * Thread count is determined adaptively in erg_init() based on sample count
  * Allocates new array - caller must free
  *
  * @param erg Pointer to ERG structure
- * @param signal_name Name of signal
- * @param length Output parameter for array length
- * @return Pointer to newly allocated double array, NULL if signal not found
+ * @param signal_name Name of signal (e.g., "Time", "Car.v")
+ * @return Pointer to newly allocated typed array, NULL if signal not found
+ *         Length is erg->sample_count
+ *         Cast to appropriate type based on signal->type:
+ *         ERG_FLOAT -> float*, ERG_DOUBLE -> double*, ERG_INT -> int*, etc.
  */
-double* erg_get_signal_as_double(const ERG* erg, const char* signal_name, size_t* length);
+void* erg_get_signal(const ERG* erg, const char* signal_name);
+
+/**
+ * Get signal data converted to double with scaling applied
+ * Convenience function that reads raw data and applies factor/offset
+ * Allocates new array - caller must free
+ *
+ * @param erg Pointer to ERG structure
+ * @param signal_name Name of signal (e.g., "Time", "Car.v")
+ * @return Pointer to newly allocated double array, NULL if signal not found
+ *         Length is erg->sample_count
+ */
+double* erg_get_signal_as_double(const ERG* erg, const char* signal_name);
 
 /**
  * Get signal metadata by name

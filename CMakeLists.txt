@@ -25,6 +25,7 @@ set(LIBERG_SOURCES
     src/infofile.c
     src/string_simd.c
     src/erg.c
+    src/thread_pool.c
 )
 
 set(LIBERG_HEADERS
@@ -32,6 +33,7 @@ set(LIBERG_HEADERS
     include/infofile.h
     include/string_simd.h
     include/erg.h
+    include/thread_pool.h
 )
 
 # Create static library
@@ -60,6 +62,9 @@ target_link_libraries(test_infofile PRIVATE liberg)
 
 add_executable(test_erg test/test_erg.c)
 target_link_libraries(test_erg PRIVATE liberg)
+
+add_executable(test_thread_pool test/test_thread_pool.c)
+target_link_libraries(test_thread_pool PRIVATE liberg)
 
 # Enable testing
 enable_testing()

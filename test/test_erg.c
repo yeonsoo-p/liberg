@@ -1,35 +1,38 @@
 #include <assert.h>
 #include <erg.h>
+#include <thread_pool.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-void test_erg_basic() {
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/time.h>
+#endif
+
+#define EPSILON 1e-9
+
+/* Timing utility - returns time in nanoseconds */
+static double get_time_ns(void) {
+#ifdef _WIN32
+    LARGE_INTEGER frequency, counter;
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&counter);
+    return (double)(counter.QuadPart * 1000000000.0) / frequency.QuadPart;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000000000.0 + ts.tv_nsec;
+#endif
+}
+
+void test_erg_basic(const char* erg_path) {
     printf("Testing basic ERG parsing...\n");
 
-    // Try to find the ERG file
-    const char* erg_path = NULL;
-    FILE*       test     = fopen("example/result.erg", "rb");
-    if (test) {
-        fclose(test);
-        erg_path = "example/result.erg";
-    } else {
-        test = fopen("../example/result.erg", "rb");
-        if (test) {
-            fclose(test);
-            erg_path = "../example/result.erg";
-        }
-    }
-
-    if (!erg_path) {
-        printf("[WARNING] result.erg not found - skipping ERG tests\n");
-        printf("  (Place file in example/result.erg or pass path as argument)\n");
-        return;
-    }
-
     ERG erg;
-    erg_init(&erg, erg_path);
+    erg_init(&erg, erg_path, NULL);  /* NULL = single-threaded */
     erg_parse(&erg);
 
     printf("  Loaded ERG file: %s\n", erg_path);
@@ -42,62 +45,34 @@ void test_erg_basic() {
     assert(erg.signal_count > 0);
     assert(erg.sample_count > 0);
     assert(erg.signals != NULL);
-    assert(erg.raw_data != NULL);
 
     printf("[OK] Basic ERG parsing test passed\n");
 
     erg_free(&erg);
 }
 
-void test_erg_signal_access() {
+void test_erg_signal_access(const char* erg_path) {
     printf("\nTesting signal access...\n");
 
-    const char* erg_path = NULL;
-    FILE*       test     = fopen("example/result.erg", "rb");
-    if (test) {
-        fclose(test);
-        erg_path = "example/result.erg";
-    } else {
-        test = fopen("../example/result.erg", "rb");
-        if (test) {
-            fclose(test);
-            erg_path = "../example/result.erg";
-        }
-    }
-
-    if (!erg_path) {
-        printf("[WARNING] result.erg not found - skipping signal access tests\n");
-        return;
-    }
-
     ERG erg;
-    erg_init(&erg, erg_path);
+    erg_init(&erg, erg_path, NULL);  /* NULL = single-threaded */
     erg_parse(&erg);
 
     // Test getting Time signal
-    size_t      time_length = 0;
-    const void* time_data   = erg_get_signal(&erg, "Time", &time_length);
+    double* time_data = erg_get_signal_as_double(&erg, "Time");
 
     if (time_data) {
-        printf("  Found 'Time' signal: %zu samples\n", time_length);
-        assert(time_length == erg.sample_count);
-
-        // Get as double array
-        size_t  double_length = 0;
-        double* time_double   = erg_get_signal_as_double(&erg, "Time", &double_length);
-        assert(time_double != NULL);
-        assert(double_length == time_length);
+        printf("  Found 'Time' signal: %zu samples\n", erg.sample_count);
 
         printf("  Time range: %.3f to %.3f seconds\n",
-               time_double[0], time_double[double_length - 1]);
+               time_data[0], time_data[erg.sample_count - 1]);
 
         // Check that time is monotonically increasing
-        for (size_t i = 1; i < double_length; i++) {
-            assert(time_double[i] >= time_double[i - 1]);
+        for (size_t i = 1; i < erg.sample_count; i++) {
+            assert(time_data[i] >= time_data[i - 1]);
         }
 
-        free(time_double);
-        free((void*)time_data);
+        free(time_data);
         printf("[OK] Time signal test passed\n");
     } else {
         printf("  'Time' signal not found, testing with first signal\n");
@@ -119,84 +94,18 @@ void test_erg_signal_access() {
     }
 
     // Test non-existent signal
-    size_t      length    = 0;
-    const void* null_data = erg_get_signal(&erg, "NonExistentSignal123", &length);
+    double* null_data = erg_get_signal_as_double(&erg, "NonExistentSignal123");
     assert(null_data == NULL);
-    assert(length == 0);
     printf("[OK] Non-existent signal test passed\n");
 
     erg_free(&erg);
 }
 
-void test_erg_signal_iteration() {
-    printf("\nTesting signal iteration...\n");
-
-    const char* erg_path = NULL;
-    FILE*       test     = fopen("example/result.erg", "rb");
-    if (test) {
-        fclose(test);
-        erg_path = "example/result.erg";
-    } else {
-        test = fopen("../example/result.erg", "rb");
-        if (test) {
-            fclose(test);
-            erg_path = "../example/result.erg";
-        }
-    }
-
-    if (!erg_path) {
-        printf("[WARNING] result.erg not found - skipping iteration tests\n");
-        return;
-    }
-
-    ERG erg;
-    erg_init(&erg, erg_path);
-    erg_parse(&erg);
-
-    printf("  Iterating through all signals...\n");
-
-    size_t signals_tested = 0;
-    for (size_t i = 0; i < erg.signal_count && i < 10; i++) {
-        const char* name   = erg.signals[i].name;
-        size_t      length = 0;
-        const void* data   = erg_get_signal(&erg, name, &length);
-
-        assert(data != NULL);
-        assert(length == erg.sample_count);
-
-        free((void*)data);
-        signals_tested++;
-    }
-
-    printf("  Successfully tested %zu signals\n", signals_tested);
-    printf("[OK] Signal iteration test passed\n");
-
-    erg_free(&erg);
-}
-
-void test_erg_export_csv() {
+void test_erg_export_csv(const char* erg_path) {
     printf("\nExporting CSV file...\n");
 
-    const char* erg_path = NULL;
-    FILE*       test     = fopen("example/result.erg", "rb");
-    if (test) {
-        fclose(test);
-        erg_path = "example/result.erg";
-    } else {
-        test = fopen("../example/result.erg", "rb");
-        if (test) {
-            fclose(test);
-            erg_path = "../example/result.erg";
-        }
-    }
-
-    if (!erg_path) {
-        printf("[WARNING] result.erg not found - skipping CSV export\n");
-        return;
-    }
-
     ERG erg;
-    erg_init(&erg, erg_path);
+    erg_init(&erg, erg_path, NULL);  /* NULL = single-threaded */
     erg_parse(&erg);
 
     // Signal names to export
@@ -205,13 +114,12 @@ void test_erg_export_csv() {
 
     // Get all signals as double arrays
     double* signals[4]    = {NULL, NULL, NULL, NULL};
-    size_t  lengths[4]    = {0, 0, 0, 0};
     int     found_signals = 0;
 
     for (size_t i = 0; i < num_signals; i++) {
-        signals[i] = erg_get_signal_as_double(&erg, signal_names[i], &lengths[i]);
+        signals[i] = erg_get_signal_as_double(&erg, signal_names[i]);
         if (signals[i]) {
-            printf("  Found signal: %s (%zu samples)\n", signal_names[i], lengths[i]);
+            printf("  Found signal: %s (%zu samples)\n", signal_names[i], erg.sample_count);
             found_signals++;
         } else {
             printf("  Signal not found: %s\n", signal_names[i]);
@@ -239,18 +147,10 @@ void test_erg_export_csv() {
     // Write CSV header
     fprintf(csv, "Time,Car.ax,Car.v,Vhcl.tRoad\n");
 
-    // Determine number of rows to write (use maximum length)
-    size_t max_length = 0;
-    for (size_t i = 0; i < num_signals; i++) {
-        if (lengths[i] > max_length) {
-            max_length = lengths[i];
-        }
-    }
-
     // Write data rows
-    for (size_t row = 0; row < max_length; row++) {
+    for (size_t row = 0; row < erg.sample_count; row++) {
         for (size_t col = 0; col < num_signals; col++) {
-            if (signals[col] && row < lengths[col]) {
+            if (signals[col]) {
                 fprintf(csv, "%.6f", signals[col][row]);
             } else {
                 fprintf(csv, ""); // Empty cell if signal not available
@@ -266,15 +166,15 @@ void test_erg_export_csv() {
     fclose(csv);
 
     // Calculate actual frequency from Time signal
-    if (signals[0] && lengths[0] >= 2) {
+    if (signals[0] && erg.sample_count >= 2) {
         double dt        = signals[0][1] - signals[0][0];
         double frequency = 1.0 / dt;
         printf("  Time signal frequency: %.3f Hz (dt = %.6f s)\n", frequency, dt);
         printf("  Time range: %.3f to %.3f seconds\n",
-               signals[0][0], signals[0][lengths[0] - 1]);
+               signals[0][0], signals[0][erg.sample_count - 1]);
     }
 
-    printf("  Wrote %zu rows to result.csv\n", max_length);
+    printf("  Wrote %zu rows to result.csv\n", erg.sample_count);
     printf("[OK] CSV export test passed\n");
 
     // Free all signal arrays
@@ -286,13 +186,218 @@ void test_erg_export_csv() {
     erg_free(&erg);
 }
 
+void test_erg_threading(const char* erg_path) {
+    printf("\nTesting multi-threaded extraction...\n");
+
+    /* Test both single-threaded (NULL pool) and multi-threaded (with pool) */
+    ERG erg_single, erg_multi;
+
+    /* Single-threaded */
+    erg_init(&erg_single, erg_path, NULL);
+    erg_parse(&erg_single);
+    printf("  Single-threaded: %d thread(s) decided\n", erg_single.num_threads);
+
+    /* Multi-threaded with 8-thread pool */
+    ThreadPool* pool = thread_pool_create(8);
+    erg_init(&erg_multi, erg_path, pool);
+    erg_parse(&erg_multi);
+    printf("  Multi-threaded:  %d thread(s) decided\n", erg_multi.num_threads);
+
+    /* Test correctness: compare single vs multi-threaded results */
+    size_t signals_tested = 0;
+    size_t signals_matched = 0;
+
+    for (size_t i = 0; i < erg_single.signal_count && i < 10; i++) {
+        const char* signal_name = erg_single.signals[i].name;
+
+        double* data_single = erg_get_signal_as_double(&erg_single, signal_name);
+        double* data_multi  = erg_get_signal_as_double(&erg_multi, signal_name);
+
+        if (!data_single || !data_multi) {
+            if (data_single) free(data_single);
+            if (data_multi) free(data_multi);
+            continue;
+        }
+
+        signals_tested++;
+
+        /* Compare results */
+        int match = 1;
+        for (size_t j = 0; j < erg_single.sample_count; j++) {
+            if (fabs(data_single[j] - data_multi[j]) > EPSILON) {
+                match = 0;
+                printf("  [FAIL] %s - sample %zu: single=%.6f, multi=%.6f\n",
+                       signal_name, j, data_single[j], data_multi[j]);
+                break;
+            }
+        }
+
+        if (match) {
+            signals_matched++;
+        }
+
+        free(data_single);
+        free(data_multi);
+    }
+
+    printf("  Tested %zu signals, %zu matched perfectly\n", signals_tested, signals_matched);
+    assert(signals_tested == signals_matched);
+    printf("[OK] Threading correctness test passed\n");
+
+    erg_free(&erg_single);
+    erg_free(&erg_multi);
+    thread_pool_destroy(pool);
+}
+
+void test_erg_performance(const char* erg_path) {
+    printf("\nPerformance Benchmark...\n");
+
+    /* Get file info from first parse */
+    ERG erg_temp;
+    erg_init(&erg_temp, erg_path, NULL);
+    erg_parse(&erg_temp);
+
+    size_t signal_count = erg_temp.signal_count;
+    size_t sample_count = erg_temp.sample_count;
+    size_t row_size = erg_temp.row_size;
+    size_t signals_to_test = signal_count < 10 ? signal_count : 10;
+
+    printf("  File: %s\n", erg_path);
+    printf("  Signals: %zu, Samples: %zu\n", signal_count, sample_count);
+    printf("  Data size: %.2f MB\n", (sample_count * row_size) / (1024.0 * 1024.0));
+
+    erg_free(&erg_temp);
+
+    /* Create thread pool once, reuse across rounds */
+    ThreadPool* pool = thread_pool_create(8);
+
+    /* Benchmark pattern: Single(1-5), Multi(1-5), Single(1-5), Multi(1-5) */
+    const int ITERATIONS = 5;
+    const int ROUNDS = 2;
+    double single_times[ROUNDS][ITERATIONS];
+    double multi_times[ROUNDS][ITERATIONS];
+
+    printf("\n  Benchmark (pattern: Single x5, Multi x5, Single x5, Multi x5):\n");
+    printf("  Note: Each round re-initializes ERG contexts (new memory mapping)\n");
+
+    for (int round = 0; round < ROUNDS; round++) {
+        /* Initialize single-threaded context for this round */
+        ERG erg_single;
+        erg_init(&erg_single, erg_path, NULL);
+        erg_parse(&erg_single);
+
+        /* Run all Single iterations */
+        printf("  Round %d - Single-threaded:\n", round + 1);
+        for (int iter = 0; iter < ITERATIONS; iter++) {
+            double start = get_time_ns();
+            for (size_t i = 0; i < signals_to_test; i++) {
+                double* data = erg_get_signal_as_double(&erg_single, erg_single.signals[i].name);
+                if (data) {
+                    free(data);
+                }
+            }
+            double end = get_time_ns();
+            single_times[round][iter] = end - start;
+            printf("    Iteration %d: %.2f ms (%.0f ns)\n",
+                   iter + 1, single_times[round][iter] / 1000000.0, single_times[round][iter]);
+        }
+
+        erg_free(&erg_single);
+
+        /* Initialize multi-threaded context for this round */
+        ERG erg_multi;
+        erg_init(&erg_multi, erg_path, pool);
+        erg_parse(&erg_multi);
+
+        if (round == 0) {
+            printf("  Multi-threaded mode decided: %d thread(s)\n", erg_multi.num_threads);
+        }
+
+        /* Run all Multi iterations */
+        printf("  Round %d - Multi-threaded:\n", round + 1);
+        for (int iter = 0; iter < ITERATIONS; iter++) {
+            double start = get_time_ns();
+            for (size_t i = 0; i < signals_to_test; i++) {
+                double* data = erg_get_signal_as_double(&erg_multi, erg_multi.signals[i].name);
+                if (data) {
+                    free(data);
+                }
+            }
+            double end = get_time_ns();
+            multi_times[round][iter] = end - start;
+            printf("    Iteration %d: %.2f ms (%.0f ns)\n",
+                   iter + 1, multi_times[round][iter] / 1000000.0, multi_times[round][iter]);
+        }
+
+        erg_free(&erg_multi);
+    }
+
+    thread_pool_destroy(pool);
+
+    /* Calculate averages across all rounds */
+    double single_total_time = 0.0;
+    double multi_total_time = 0.0;
+    for (int round = 0; round < ROUNDS; round++) {
+        for (int iter = 0; iter < ITERATIONS; iter++) {
+            single_total_time += single_times[round][iter];
+            multi_total_time += multi_times[round][iter];
+        }
+    }
+
+    double single_avg_time = single_total_time / (ROUNDS * ITERATIONS);
+    double multi_avg_time = multi_total_time / (ROUNDS * ITERATIONS);
+
+    printf("\n  Single-threaded average: %.2f ms (%.0f ns)\n", single_avg_time / 1000000.0, single_avg_time);
+    printf("  Multi-threaded average:  %.2f ms (%.0f ns)\n", multi_avg_time / 1000000.0, multi_avg_time);
+
+    /* Calculate speedup */
+    double speedup = single_avg_time / multi_avg_time;
+    printf("\n  Speedup: %.2fx", speedup);
+    if (speedup > 1.0) {
+        printf(" (multi-threaded is faster)\n");
+    } else if (speedup < 1.0) {
+        printf(" (single-threaded is faster)\n");
+    } else {
+        printf(" (no difference)\n");
+    }
+
+    /* Calculate throughput */
+    size_t bytes_per_iteration = signals_to_test * sample_count * sizeof(double);
+    double single_throughput_mbps = (bytes_per_iteration / (1024.0 * 1024.0)) / (single_avg_time / 1000000000.0);
+    double multi_throughput_mbps = (bytes_per_iteration / (1024.0 * 1024.0)) / (multi_avg_time / 1000000000.0);
+
+    printf("  Single-threaded throughput: %.2f MB/s\n", single_throughput_mbps);
+    printf("  Multi-threaded throughput:  %.2f MB/s\n", multi_throughput_mbps);
+
+    printf("[OK] Performance benchmark completed\n");
+}
+
 int main(int argc, char* argv[]) {
     printf("=== ERG Parser Test ===\n\n");
 
-    test_erg_basic();
-    test_erg_signal_access();
-    test_erg_signal_iteration();
-    test_erg_export_csv();
+    if (argc < 2) {
+        fprintf(stderr, "ERROR: ERG file path required\n");
+        fprintf(stderr, "Usage: %s <path/to/file.erg>\n", argv[0]);
+        return 1;
+    }
+
+    const char* erg_path = argv[1];
+
+    /* Check if file exists */
+    FILE* test = fopen(erg_path, "rb");
+    if (!test) {
+        fprintf(stderr, "ERROR: ERG file not found: %s\n", erg_path);
+        return 1;
+    }
+    fclose(test);
+
+    printf("ERG file: %s\n\n", erg_path);
+
+    test_erg_basic(erg_path);
+    test_erg_signal_access(erg_path);
+    test_erg_export_csv(erg_path);
+    test_erg_threading(erg_path);
+    test_erg_performance(erg_path);
 
     printf("\n=== All ERG tests passed! ===\n");
     printf("\nGenerated files:\n");

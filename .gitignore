@@ -41,6 +41,7 @@
 *.su
 *.idb
 *.pdb
+*.png
 
 # Kernel Module Compile Results
 *.mod*
@@ -58,7 +59,8 @@ dkms.conf
 build/
 dist/
 .claude/
-
+venv
+example
 # CMake
 CMakeCache.txt
 CMakeFiles/
