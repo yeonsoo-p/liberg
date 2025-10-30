@@ -35,16 +35,24 @@ set(LIBERG_HEADERS
 )
 
 # Create static library
-add_library(liberg STATIC ${LIBERG_SOURCES} ${LIBERG_HEADERS})
-target_compile_options(liberg PRIVATE -mavx2)
-target_include_directories(liberg PUBLIC
+add_library(liberg_static STATIC ${LIBERG_SOURCES} ${LIBERG_HEADERS})
+set_target_properties(liberg_static PROPERTIES
+    OUTPUT_NAME liberg
+    PREFIX ""
+)
+target_compile_options(liberg_static PRIVATE -mavx2)
+target_include_directories(liberg_static PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 
 # Create shared library
 add_library(liberg_shared SHARED ${LIBERG_SOURCES} ${LIBERG_HEADERS})
-set_target_properties(liberg_shared PROPERTIES OUTPUT_NAME liberg)
+set_target_properties(liberg_shared PROPERTIES
+    OUTPUT_NAME liberg
+    PREFIX ""
+    IMPORT_PREFIX ""
+)
 target_compile_options(liberg_shared PRIVATE -mavx2)
 target_include_directories(liberg_shared PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -53,13 +61,13 @@ target_include_directories(liberg_shared PUBLIC
 
 # Test executables
 add_executable(test_arena test/test_arena.c)
-target_link_libraries(test_arena PRIVATE liberg)
+target_link_libraries(test_arena PRIVATE liberg_static)
 
 add_executable(test_infofile test/test_infofile.c)
-target_link_libraries(test_infofile PRIVATE liberg)
+target_link_libraries(test_infofile PRIVATE liberg_static)
 
 add_executable(test_erg test/test_erg.c)
-target_link_libraries(test_erg PRIVATE liberg)
+target_link_libraries(test_erg PRIVATE liberg_static)
 
 # Enable testing
 enable_testing()
@@ -68,7 +76,7 @@ add_test(NAME infofile_test COMMAND test_infofile)
 add_test(NAME erg_test COMMAND test_erg)
 
 # Installation rules
-install(TARGETS liberg liberg_shared
+install(TARGETS liberg_static liberg_shared
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin
