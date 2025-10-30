@@ -24,12 +24,14 @@ set(LIBERG_SOURCES
     src/arena.c
     src/infofile.c
     src/string_simd.c
+    src/erg.c
 )
 
 set(LIBERG_HEADERS
     include/arena.h
     include/infofile.h
     include/string_simd.h
+    include/erg.h
 )
 
 # Create static library
@@ -56,10 +58,14 @@ target_link_libraries(test_arena PRIVATE liberg)
 add_executable(test_infofile test/test_infofile.c)
 target_link_libraries(test_infofile PRIVATE liberg)
 
+add_executable(test_erg test/test_erg.c)
+target_link_libraries(test_erg PRIVATE liberg)
+
 # Enable testing
 enable_testing()
 add_test(NAME arena_test COMMAND test_arena)
 add_test(NAME infofile_test COMMAND test_infofile)
+add_test(NAME erg_test COMMAND test_erg)
 
 # Installation rules
 install(TARGETS liberg liberg_shared

@@ -272,7 +272,7 @@ int main(int argc, char* argv[]) {
     if (road_file) {
         test_file_comprehensive(road_file, road_test_cases, NUM_ROAD_CASES, "road.rd5 (large file)");
     } else {
-        printf("\n⚠ road.rd5 not found - skipping large file tests\n");
+        printf("\n[WARNING] road.rd5 not found - skipping large file tests\n");
         printf("  (Place file in example/road.rd5 or pass path as first argument)\n");
     }
 
@@ -280,7 +280,7 @@ int main(int argc, char* argv[]) {
     if (erg_file) {
         test_file_comprehensive(erg_file, erg_test_cases, NUM_ERG_CASES, "result.erg.info (detailed metadata)");
     } else {
-        printf("\n⚠ result.erg.info not found - skipping metadata tests\n");
+        printf("\n[WARNING] result.erg.info not found - skipping metadata tests\n");
         printf("  (Place file in example/result.erg.info or pass path as second argument)\n");
     }
 
