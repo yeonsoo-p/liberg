@@ -46,12 +46,6 @@ def plot_csv(csv_path="result.csv"):
         axes[1].grid(True, alpha=0.3)
         axes[1].set_title('Vehicle Velocity')
 
-    # Plot Vhcl.tRoad (time on road)
-    if 'Vhcl.tRoad' in df.columns:
-        axes[2].plot(df['Time'], df['Vhcl.tRoad'], 'r-', linewidth=1)
-        axes[2].set_ylabel('Vhcl.tRoad [s]')
-        axes[2].grid(True, alpha=0.3)
-        axes[2].set_title('Time on Road')
 
     axes[2].set_xlabel('Time [s]')
 
@@ -68,5 +62,5 @@ def plot_csv(csv_path="result.csv"):
 if __name__ == "__main__":
     import sys
 
-    csv_path = sys.argv[1] if len(sys.argv) > 1 else "result.csv"
+    csv_path = sys.argv[1] if len(sys.argv) > 1 else "result_avx2.csv"
     plot_csv(csv_path)

@@ -12,11 +12,17 @@ endif()
 
 # Compiler optimization flags
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-    set(CMAKE_C_FLAGS_RELEASE "-O3 -march=native -DNDEBUG")
+    set(CMAKE_C_FLAGS_RELEASE "-O3 -march=native -msse2 -mavx2 -DNDEBUG")
     set(CMAKE_C_FLAGS_DEBUG "-O0 -g -Wall -Wextra -Wpedantic")
+    # Optional: Add AVX-512 support if available
+    # Uncomment the following line to enable AVX-512
+    # set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -mavx512f")
 elseif(CMAKE_C_COMPILER_ID MATCHES "MSVC")
-    set(CMAKE_C_FLAGS_RELEASE "/O2 /DNDEBUG")
+    set(CMAKE_C_FLAGS_RELEASE "/O2 /arch:AVX2 /DNDEBUG")
     set(CMAKE_C_FLAGS_DEBUG "/Od /Zi /Wall")
+    # Optional: Add AVX-512 support if available
+    # Uncomment the following line to enable AVX-512
+    # set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /arch:AVX512")
 endif()
 
 # Library source files
@@ -40,7 +46,6 @@ set_target_properties(liberg_static PROPERTIES
     OUTPUT_NAME liberg
     PREFIX ""
 )
-target_compile_options(liberg_static PRIVATE -mavx2)
 target_include_directories(liberg_static PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
@@ -53,7 +58,6 @@ set_target_properties(liberg_shared PROPERTIES
     PREFIX ""
     IMPORT_PREFIX ""
 )
-target_compile_options(liberg_shared PRIVATE -mavx2)
 target_include_directories(liberg_shared PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>

@@ -9,6 +9,7 @@
 #include <intrin.h>
 #else
 #include <immintrin.h>
+#include <cpuid.h>
 #endif
 
 /* Memory-mapped file support */
@@ -77,9 +78,94 @@ static double parse_double(const char* str) {
     return atof(str);
 }
 
+/* CPU feature detection using CPUID */
+static ERGSIMDLevel detect_simd_level(void) {
+#ifdef _MSC_VER
+    int cpu_info[4];
+
+    /* Check for AVX512F (AVX-512 Foundation) */
+    __cpuidex(cpu_info, 7, 0);
+    if (cpu_info[1] & (1 << 16)) {  /* EBX bit 16 = AVX512F */
+        /* Also check OSXSAVE and that OS supports AVX512 */
+        __cpuid(cpu_info, 1);
+        if ((cpu_info[2] & (1 << 27)) != 0) {  /* OSXSAVE */
+            unsigned long long xcr0 = _xgetbv(0);
+            if ((xcr0 & 0xE6) == 0xE6) {  /* Check AVX512 state */
+                return ERG_SIMD_AVX512;
+            }
+        }
+    }
+
+    /* Check for AVX2 */
+    __cpuidex(cpu_info, 7, 0);
+    if (cpu_info[1] & (1 << 5)) {  /* EBX bit 5 = AVX2 */
+        /* Also check OSXSAVE and that OS supports AVX */
+        __cpuid(cpu_info, 1);
+        if ((cpu_info[2] & (1 << 27)) != 0) {  /* OSXSAVE */
+            unsigned long long xcr0 = _xgetbv(0);
+            if ((xcr0 & 0x6) == 0x6) {  /* Check AVX state */
+                return ERG_SIMD_AVX2;
+            }
+        }
+    }
+
+    /* Check for SSE2 (always available on x64) */
+    __cpuid(cpu_info, 1);
+    if (cpu_info[3] & (1 << 26)) {  /* EDX bit 26 = SSE2 */
+        return ERG_SIMD_SSE2;
+    }
+#else
+    unsigned int eax, ebx, ecx, edx;
+
+    /* Check for AVX512F */
+    if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+        if (ebx & (1 << 16)) {  /* AVX512F */
+            /* Check OSXSAVE and OS support */
+            if (__get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
+                if (ecx & (1 << 27)) {  /* OSXSAVE */
+                    unsigned long long xcr0;
+                    __asm__ ("xgetbv" : "=a"(xcr0) : "c"(0) : "%edx");
+                    if ((xcr0 & 0xE6) == 0xE6) {
+                        return ERG_SIMD_AVX512;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Check for AVX2 */
+    if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+        if (ebx & (1 << 5)) {  /* AVX2 */
+            /* Check OSXSAVE and OS support */
+            if (__get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
+                if (ecx & (1 << 27)) {  /* OSXSAVE */
+                    unsigned long long xcr0;
+                    __asm__ ("xgetbv" : "=a"(xcr0) : "c"(0) : "%edx");
+                    if ((xcr0 & 0x6) == 0x6) {
+                        return ERG_SIMD_AVX2;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Check for SSE2 */
+    if (__get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
+        if (edx & (1 << 26)) {  /* SSE2 */
+            return ERG_SIMD_SSE2;
+        }
+    }
+#endif
+
+    return ERG_SIMD_NONE;
+}
+
 
 void erg_init(ERG* erg, const char* erg_file_path) {
     memset(erg, 0, sizeof(ERG));
+
+    /* Detect best available SIMD instruction set */
+    erg->simd_level = detect_simd_level();
 
     /* Initialize arena for metadata strings (64KB initial, grows as needed) */
     arena_init(&erg->metadata_arena, 64 * 1024);
@@ -336,27 +422,188 @@ const ERGSignal* erg_get_signal_info(const ERG* erg, const char* signal_name) {
 
 /* SIMD-optimized signal extraction functions */
 
-/* Extract signal using SIMD for 4-byte elements (float, int, uint) */
-static void extract_signal_4byte_simd(const uint8_t* row_data, uint8_t* signal_data,
+/* ============================================================================
+ * SSE2 IMPLEMENTATIONS (128-bit, available on all x64 CPUs)
+ * ============================================================================ */
+
+/* SSE2: Extract 4-byte elements (4 samples at a time) - OPTIMIZED */
+static void extract_signal_4byte_sse2(const uint8_t* restrict row_data, uint8_t* restrict signal_data,
                                       size_t sample_count, size_t signal_offset,
                                       size_t row_size) {
     const uint8_t* src = row_data + signal_offset;
+    size_t simd_samples = (sample_count / 4) * 4;
 
-    /* Process 8 samples at a time with AVX2 */
+    /* Optimized: Use individual loads and unpack instead of _mm_set which is inefficient */
+    for (size_t i = 0; i < simd_samples; i += 4) {
+        /* Load each 32-bit value individually */
+        __m128i val0 = _mm_cvtsi32_si128(*(const int32_t*)(src + (i + 0) * row_size));
+        __m128i val1 = _mm_cvtsi32_si128(*(const int32_t*)(src + (i + 1) * row_size));
+        __m128i val2 = _mm_cvtsi32_si128(*(const int32_t*)(src + (i + 2) * row_size));
+        __m128i val3 = _mm_cvtsi32_si128(*(const int32_t*)(src + (i + 3) * row_size));
+
+        /* Combine using unpack operations - more efficient than set */
+        __m128i val01 = _mm_unpacklo_epi32(val0, val1);  /* [val0, val1, 0, 0] */
+        __m128i val23 = _mm_unpacklo_epi32(val2, val3);  /* [val2, val3, 0, 0] */
+        __m128i data = _mm_unpacklo_epi64(val01, val23); /* [val0, val1, val2, val3] */
+
+        _mm_storeu_si128((__m128i*)(signal_data + i * 4), data);
+    }
+
+    /* Handle remaining samples with scalar */
+    for (size_t i = simd_samples; i < sample_count; i++) {
+        memcpy(signal_data + i * 4, src + i * row_size, 4);
+    }
+}
+
+/* SSE2: Extract 8-byte elements (2 samples at a time) - OPTIMIZED */
+static void extract_signal_8byte_sse2(const uint8_t* restrict row_data, uint8_t* restrict signal_data,
+                                      size_t sample_count, size_t signal_offset,
+                                      size_t row_size) {
+    const uint8_t* src = row_data + signal_offset;
+    size_t simd_samples = (sample_count / 2) * 2;
+
+    /* Optimized: Use _mm_loadl_epi64 for better performance */
+    for (size_t i = 0; i < simd_samples; i += 2) {
+        /* Load two 64-bit values using loadl and unpacklo */
+        __m128i val0 = _mm_loadl_epi64((const __m128i*)(src + (i + 0) * row_size));
+        __m128i val1 = _mm_loadl_epi64((const __m128i*)(src + (i + 1) * row_size));
+        __m128i data = _mm_unpacklo_epi64(val0, val1);  /* [val0, val1] */
+
+        _mm_storeu_si128((__m128i*)(signal_data + i * 8), data);
+    }
+
+    /* Handle remaining samples with scalar */
+    for (size_t i = simd_samples; i < sample_count; i++) {
+        memcpy(signal_data + i * 8, src + i * row_size, 8);
+    }
+}
+
+/* SSE2: Extract 2-byte elements (8 samples at a time) - OPTIMIZED */
+static void extract_signal_2byte_sse2(const uint8_t* restrict row_data, uint8_t* restrict signal_data,
+                                      size_t sample_count, size_t signal_offset,
+                                      size_t row_size) {
+    const uint8_t* src = row_data + signal_offset;
     size_t simd_samples = (sample_count / 8) * 8;
 
+    /* Optimized: Use individual loads and interleave with unpacks */
     for (size_t i = 0; i < simd_samples; i += 8) {
-        /* Gather 8 int32 values from different rows */
-        __m256i data = _mm256_set_epi32(
-            *(const int32_t*)(src + (i + 7) * row_size),
-            *(const int32_t*)(src + (i + 6) * row_size),
-            *(const int32_t*)(src + (i + 5) * row_size),
-            *(const int32_t*)(src + (i + 4) * row_size),
-            *(const int32_t*)(src + (i + 3) * row_size),
-            *(const int32_t*)(src + (i + 2) * row_size),
-            *(const int32_t*)(src + (i + 1) * row_size),
-            *(const int32_t*)(src + (i + 0) * row_size)
-        );
+        /* Load 8 int16 values using insert operations */
+        __m128i val0 = _mm_cvtsi32_si128(*(const uint16_t*)(src + (i + 0) * row_size));
+        __m128i val1 = _mm_cvtsi32_si128(*(const uint16_t*)(src + (i + 1) * row_size));
+        __m128i val2 = _mm_cvtsi32_si128(*(const uint16_t*)(src + (i + 2) * row_size));
+        __m128i val3 = _mm_cvtsi32_si128(*(const uint16_t*)(src + (i + 3) * row_size));
+        __m128i val4 = _mm_cvtsi32_si128(*(const uint16_t*)(src + (i + 4) * row_size));
+        __m128i val5 = _mm_cvtsi32_si128(*(const uint16_t*)(src + (i + 5) * row_size));
+        __m128i val6 = _mm_cvtsi32_si128(*(const uint16_t*)(src + (i + 6) * row_size));
+        __m128i val7 = _mm_cvtsi32_si128(*(const uint16_t*)(src + (i + 7) * row_size));
+
+        /* Interleave pairs using unpack */
+        __m128i val01 = _mm_unpacklo_epi16(val0, val1);
+        __m128i val23 = _mm_unpacklo_epi16(val2, val3);
+        __m128i val45 = _mm_unpacklo_epi16(val4, val5);
+        __m128i val67 = _mm_unpacklo_epi16(val6, val7);
+
+        /* Combine pairs into quads */
+        __m128i val0123 = _mm_unpacklo_epi32(val01, val23);
+        __m128i val4567 = _mm_unpacklo_epi32(val45, val67);
+
+        /* Final combine */
+        __m128i data = _mm_unpacklo_epi64(val0123, val4567);
+
+        _mm_storeu_si128((__m128i*)(signal_data + i * 2), data);
+    }
+
+    /* Handle remaining samples with scalar */
+    for (size_t i = simd_samples; i < sample_count; i++) {
+        memcpy(signal_data + i * 2, src + i * row_size, 2);
+    }
+}
+
+/* SSE2: Extract 1-byte elements (16 samples at a time) - NEW */
+static void extract_signal_1byte_sse2(const uint8_t* restrict row_data, uint8_t* restrict signal_data,
+                                      size_t sample_count, size_t signal_offset,
+                                      size_t row_size) {
+    const uint8_t* src = row_data + signal_offset;
+    size_t simd_samples = (sample_count / 16) * 16;
+
+    /* Process 16 bytes at a time */
+    for (size_t i = 0; i < simd_samples; i += 16) {
+        /* Load 16 individual bytes */
+        __m128i val0 = _mm_cvtsi32_si128(*(const uint8_t*)(src + (i + 0) * row_size));
+        __m128i val1 = _mm_cvtsi32_si128(*(const uint8_t*)(src + (i + 1) * row_size));
+        __m128i val2 = _mm_cvtsi32_si128(*(const uint8_t*)(src + (i + 2) * row_size));
+        __m128i val3 = _mm_cvtsi32_si128(*(const uint8_t*)(src + (i + 3) * row_size));
+        __m128i val4 = _mm_cvtsi32_si128(*(const uint8_t*)(src + (i + 4) * row_size));
+        __m128i val5 = _mm_cvtsi32_si128(*(const uint8_t*)(src + (i + 5) * row_size));
+        __m128i val6 = _mm_cvtsi32_si128(*(const uint8_t*)(src + (i + 6) * row_size));
+        __m128i val7 = _mm_cvtsi32_si128(*(const uint8_t*)(src + (i + 7) * row_size));
+        __m128i val8 = _mm_cvtsi32_si128(*(const uint8_t*)(src + (i + 8) * row_size));
+        __m128i val9 = _mm_cvtsi32_si128(*(const uint8_t*)(src + (i + 9) * row_size));
+        __m128i val10 = _mm_cvtsi32_si128(*(const uint8_t*)(src + (i + 10) * row_size));
+        __m128i val11 = _mm_cvtsi32_si128(*(const uint8_t*)(src + (i + 11) * row_size));
+        __m128i val12 = _mm_cvtsi32_si128(*(const uint8_t*)(src + (i + 12) * row_size));
+        __m128i val13 = _mm_cvtsi32_si128(*(const uint8_t*)(src + (i + 13) * row_size));
+        __m128i val14 = _mm_cvtsi32_si128(*(const uint8_t*)(src + (i + 14) * row_size));
+        __m128i val15 = _mm_cvtsi32_si128(*(const uint8_t*)(src + (i + 15) * row_size));
+
+        /* Interleave bytes progressively */
+        __m128i val01 = _mm_unpacklo_epi8(val0, val1);
+        __m128i val23 = _mm_unpacklo_epi8(val2, val3);
+        __m128i val45 = _mm_unpacklo_epi8(val4, val5);
+        __m128i val67 = _mm_unpacklo_epi8(val6, val7);
+        __m128i val89 = _mm_unpacklo_epi8(val8, val9);
+        __m128i val1011 = _mm_unpacklo_epi8(val10, val11);
+        __m128i val1213 = _mm_unpacklo_epi8(val12, val13);
+        __m128i val1415 = _mm_unpacklo_epi8(val14, val15);
+
+        /* Combine into 16-bit pairs */
+        __m128i val0123 = _mm_unpacklo_epi16(val01, val23);
+        __m128i val4567 = _mm_unpacklo_epi16(val45, val67);
+        __m128i val891011 = _mm_unpacklo_epi16(val89, val1011);
+        __m128i val12131415 = _mm_unpacklo_epi16(val1213, val1415);
+
+        /* Combine into 32-bit quads */
+        __m128i val01234567 = _mm_unpacklo_epi32(val0123, val4567);
+        __m128i val89101112131415 = _mm_unpacklo_epi32(val891011, val12131415);
+
+        /* Final combine */
+        __m128i data = _mm_unpacklo_epi64(val01234567, val89101112131415);
+
+        _mm_storeu_si128((__m128i*)(signal_data + i), data);
+    }
+
+    /* Handle remaining samples with scalar */
+    for (size_t i = simd_samples; i < sample_count; i++) {
+        signal_data[i] = src[i * row_size];
+    }
+}
+
+/* ============================================================================
+ * AVX2 IMPLEMENTATIONS (256-bit, available on most modern CPUs)
+ * ============================================================================ */
+
+/* AVX2: Extract 4-byte elements (8 samples at a time with gather) */
+static void extract_signal_4byte_avx2(const uint8_t* restrict row_data, uint8_t* restrict signal_data,
+                                      size_t sample_count, size_t signal_offset,
+                                      size_t row_size) {
+    const uint8_t* src = row_data + signal_offset;
+    size_t simd_samples = (sample_count / 8) * 8;
+
+    /* Create index vector for gather: [0, row_size, 2*row_size, ..., 7*row_size] */
+    __m256i vindex = _mm256_setr_epi32(
+        0 * row_size,
+        1 * row_size,
+        2 * row_size,
+        3 * row_size,
+        4 * row_size,
+        5 * row_size,
+        6 * row_size,
+        7 * row_size
+    );
+
+    for (size_t i = 0; i < simd_samples; i += 8) {
+        /* Gather 8 int32 values from strided memory locations */
+        __m256i data = _mm256_i32gather_epi32((const int*)(src + i * row_size), vindex, 1);
         _mm256_storeu_si256((__m256i*)(signal_data + i * 4), data);
     }
 
@@ -366,23 +613,24 @@ static void extract_signal_4byte_simd(const uint8_t* row_data, uint8_t* signal_d
     }
 }
 
-/* Extract signal using SIMD for 8-byte elements (double, int64, uint64) */
-static void extract_signal_8byte_simd(const uint8_t* row_data, uint8_t* signal_data,
+/* AVX2: Extract 8-byte elements (4 samples at a time with gather) */
+static void extract_signal_8byte_avx2(const uint8_t* restrict row_data, uint8_t* restrict signal_data,
                                       size_t sample_count, size_t signal_offset,
                                       size_t row_size) {
     const uint8_t* src = row_data + signal_offset;
-
-    /* Process 4 samples at a time with AVX2 */
     size_t simd_samples = (sample_count / 4) * 4;
 
+    /* Create index vector for gather: [0, row_size, 2*row_size, 3*row_size] */
+    __m256i vindex = _mm256_setr_epi64x(
+        0 * row_size,
+        1 * row_size,
+        2 * row_size,
+        3 * row_size
+    );
+
     for (size_t i = 0; i < simd_samples; i += 4) {
-        /* Gather 4 int64 values from different rows */
-        __m256i data = _mm256_set_epi64x(
-            *(const int64_t*)(src + (i + 3) * row_size),
-            *(const int64_t*)(src + (i + 2) * row_size),
-            *(const int64_t*)(src + (i + 1) * row_size),
-            *(const int64_t*)(src + (i + 0) * row_size)
-        );
+        /* Gather 4 int64 values from strided memory locations */
+        __m256i data = _mm256_i64gather_epi64((const long long*)(src + i * row_size), vindex, 1);
         _mm256_storeu_si256((__m256i*)(signal_data + i * 8), data);
     }
 
@@ -392,36 +640,42 @@ static void extract_signal_8byte_simd(const uint8_t* row_data, uint8_t* signal_d
     }
 }
 
-/* Extract signal using SIMD for 2-byte elements (short, ushort) */
-static void extract_signal_2byte_simd(const uint8_t* row_data, uint8_t* signal_data,
+/* AVX2: Extract 2-byte elements (16 samples at a time) - OPTIMIZED */
+static void extract_signal_2byte_avx2(const uint8_t* restrict row_data, uint8_t* restrict signal_data,
                                       size_t sample_count, size_t signal_offset,
                                       size_t row_size) {
     const uint8_t* src = row_data + signal_offset;
-
-    /* Process 16 samples at a time with AVX2 */
     size_t simd_samples = (sample_count / 16) * 16;
 
+    /* Optimized: Use packs instead of packus for signed/unsigned consistency */
+    __m256i vindex = _mm256_setr_epi32(
+        0 * row_size,
+        1 * row_size,
+        2 * row_size,
+        3 * row_size,
+        4 * row_size,
+        5 * row_size,
+        6 * row_size,
+        7 * row_size
+    );
+
     for (size_t i = 0; i < simd_samples; i += 16) {
-        /* Gather 16 int16 values from different rows */
-        __m256i data = _mm256_set_epi16(
-            *(const int16_t*)(src + (i + 15) * row_size),
-            *(const int16_t*)(src + (i + 14) * row_size),
-            *(const int16_t*)(src + (i + 13) * row_size),
-            *(const int16_t*)(src + (i + 12) * row_size),
-            *(const int16_t*)(src + (i + 11) * row_size),
-            *(const int16_t*)(src + (i + 10) * row_size),
-            *(const int16_t*)(src + (i + 9) * row_size),
-            *(const int16_t*)(src + (i + 8) * row_size),
-            *(const int16_t*)(src + (i + 7) * row_size),
-            *(const int16_t*)(src + (i + 6) * row_size),
-            *(const int16_t*)(src + (i + 5) * row_size),
-            *(const int16_t*)(src + (i + 4) * row_size),
-            *(const int16_t*)(src + (i + 3) * row_size),
-            *(const int16_t*)(src + (i + 2) * row_size),
-            *(const int16_t*)(src + (i + 1) * row_size),
-            *(const int16_t*)(src + (i + 0) * row_size)
-        );
-        _mm256_storeu_si256((__m256i*)(signal_data + i * 2), data);
+        /* Gather 16-bit values by reading 32 bits */
+        __m256i data_lo = _mm256_i32gather_epi32((const int*)(src + i * row_size), vindex, 1);
+        __m256i data_hi = _mm256_i32gather_epi32((const int*)(src + (i + 8) * row_size), vindex, 1);
+
+        /* Mask to keep only lower 16 bits */
+        __m256i mask = _mm256_set1_epi32(0x0000FFFF);
+        data_lo = _mm256_and_si256(data_lo, mask);
+        data_hi = _mm256_and_si256(data_hi, mask);
+
+        /* Pack 32-bit to 16-bit using packs - more efficient than packus with mask */
+        __m256i packed = _mm256_packs_epi32(data_lo, data_hi);
+
+        /* Fix lane ordering */
+        packed = _mm256_permute4x64_epi64(packed, 0xD8);  /* [0,2,1,3] */
+
+        _mm256_storeu_si256((__m256i*)(signal_data + i * 2), packed);
     }
 
     /* Handle remaining samples with scalar */
@@ -430,8 +684,210 @@ static void extract_signal_2byte_simd(const uint8_t* row_data, uint8_t* signal_d
     }
 }
 
+/* AVX2: Extract 1-byte elements (32 samples at a time) - NEW */
+static void extract_signal_1byte_avx2(const uint8_t* restrict row_data, uint8_t* restrict signal_data,
+                                      size_t sample_count, size_t signal_offset,
+                                      size_t row_size) {
+    const uint8_t* src = row_data + signal_offset;
+    size_t simd_samples = (sample_count / 32) * 32;
+
+    /* Create index vectors for gather */
+    __m256i vindex = _mm256_setr_epi32(
+        0 * row_size,
+        1 * row_size,
+        2 * row_size,
+        3 * row_size,
+        4 * row_size,
+        5 * row_size,
+        6 * row_size,
+        7 * row_size
+    );
+
+    for (size_t i = 0; i < simd_samples; i += 32) {
+        /* Gather 32 bytes using four 8-element gathers */
+        __m256i data0 = _mm256_i32gather_epi32((const int*)(src + (i + 0) * row_size), vindex, 1);
+        __m256i data1 = _mm256_i32gather_epi32((const int*)(src + (i + 8) * row_size), vindex, 1);
+        __m256i data2 = _mm256_i32gather_epi32((const int*)(src + (i + 16) * row_size), vindex, 1);
+        __m256i data3 = _mm256_i32gather_epi32((const int*)(src + (i + 24) * row_size), vindex, 1);
+
+        /* Mask to keep only lowest byte */
+        __m256i mask = _mm256_set1_epi32(0x000000FF);
+        data0 = _mm256_and_si256(data0, mask);
+        data1 = _mm256_and_si256(data1, mask);
+        data2 = _mm256_and_si256(data2, mask);
+        data3 = _mm256_and_si256(data3, mask);
+
+        /* Pack 32-bit -> 16-bit */
+        __m256i packed01 = _mm256_packs_epi32(data0, data1);
+        __m256i packed23 = _mm256_packs_epi32(data2, data3);
+
+        /* Pack 16-bit -> 8-bit */
+        __m256i packed = _mm256_packs_epi16(packed01, packed23);
+
+        /* Fix ordering from packing */
+        packed = _mm256_permute4x64_epi64(packed, 0xD8);  /* [0,2,1,3] */
+
+        _mm256_storeu_si256((__m256i*)(signal_data + i), packed);
+    }
+
+    /* Handle remaining samples with scalar */
+    for (size_t i = simd_samples; i < sample_count; i++) {
+        signal_data[i] = src[i * row_size];
+    }
+}
+
+/* ============================================================================
+ * AVX512 IMPLEMENTATIONS (512-bit, available on newer CPUs)
+ * ============================================================================ */
+
+#ifdef __AVX512F__
+/* AVX512: Extract 4-byte elements (16 samples at a time with gather) - OPTIMIZED */
+static void extract_signal_4byte_avx512(const uint8_t* restrict row_data, uint8_t* restrict signal_data,
+                                        size_t sample_count, size_t signal_offset,
+                                        size_t row_size) {
+    const uint8_t* src = row_data + signal_offset;
+    size_t simd_samples = (sample_count / 16) * 16;
+
+    /* Create index vector for gather */
+    __m512i vindex = _mm512_setr_epi32(
+        0 * row_size, 1 * row_size, 2 * row_size, 3 * row_size,
+        4 * row_size, 5 * row_size, 6 * row_size, 7 * row_size,
+        8 * row_size, 9 * row_size, 10 * row_size, 11 * row_size,
+        12 * row_size, 13 * row_size, 14 * row_size, 15 * row_size
+    );
+
+    for (size_t i = 0; i < simd_samples; i += 16) {
+        /* Gather 16 int32 values from strided memory locations */
+        /* Note: AVX512 gather parameter order is (index, base_ptr, scale) */
+        __m512i data = _mm512_i32gather_epi32(vindex, (const void*)(src + i * row_size), 1);
+        _mm512_storeu_si512(signal_data + i * 4, data);
+    }
+
+    /* Handle remaining samples with scalar */
+    for (size_t i = simd_samples; i < sample_count; i++) {
+        memcpy(signal_data + i * 4, src + i * row_size, 4);
+    }
+}
+
+/* AVX512: Extract 8-byte elements (8 samples at a time with gather) - OPTIMIZED */
+static void extract_signal_8byte_avx512(const uint8_t* restrict row_data, uint8_t* restrict signal_data,
+                                        size_t sample_count, size_t signal_offset,
+                                        size_t row_size) {
+    const uint8_t* src = row_data + signal_offset;
+    size_t simd_samples = (sample_count / 8) * 8;
+
+    /* Create index vector for gather */
+    __m512i vindex = _mm512_setr_epi64(
+        0 * row_size, 1 * row_size, 2 * row_size, 3 * row_size,
+        4 * row_size, 5 * row_size, 6 * row_size, 7 * row_size
+    );
+
+    for (size_t i = 0; i < simd_samples; i += 8) {
+        /* Gather 8 int64 values from strided memory locations */
+        __m512i data = _mm512_i64gather_epi64(vindex, (const void*)(src + i * row_size), 1);
+        _mm512_storeu_si512(signal_data + i * 8, data);
+    }
+
+    /* Handle remaining samples with scalar */
+    for (size_t i = simd_samples; i < sample_count; i++) {
+        memcpy(signal_data + i * 8, src + i * row_size, 8);
+    }
+}
+
+/* AVX512: Extract 2-byte elements (32 samples at a time) - OPTIMIZED */
+static void extract_signal_2byte_avx512(const uint8_t* restrict row_data, uint8_t* restrict signal_data,
+                                        size_t sample_count, size_t signal_offset,
+                                        size_t row_size) {
+    const uint8_t* src = row_data + signal_offset;
+    size_t simd_samples = (sample_count / 32) * 32;
+
+    /* Optimized: Use mask and packs instead of packus for better performance */
+    __m512i vindex = _mm512_setr_epi32(
+        0 * row_size, 1 * row_size, 2 * row_size, 3 * row_size,
+        4 * row_size, 5 * row_size, 6 * row_size, 7 * row_size,
+        8 * row_size, 9 * row_size, 10 * row_size, 11 * row_size,
+        12 * row_size, 13 * row_size, 14 * row_size, 15 * row_size
+    );
+
+    for (size_t i = 0; i < simd_samples; i += 32) {
+        /* Gather 16-bit values as 32-bit */
+        __m512i data_lo = _mm512_i32gather_epi32(vindex, (const void*)(src + i * row_size), 1);
+        __m512i data_hi = _mm512_i32gather_epi32(vindex, (const void*)(src + (i + 16) * row_size), 1);
+
+        /* Mask to keep only lower 16 bits */
+        __m512i mask = _mm512_set1_epi32(0x0000FFFF);
+        data_lo = _mm512_and_epi32(data_lo, mask);
+        data_hi = _mm512_and_epi32(data_hi, mask);
+
+        /* Pack 32-bit to 16-bit using packs */
+        __m512i packed = _mm512_packs_epi32(data_lo, data_hi);
+
+        /* Permute to correct order */
+        packed = _mm512_permutexvar_epi64(
+            _mm512_setr_epi64(0, 2, 4, 6, 1, 3, 5, 7), packed
+        );
+
+        _mm512_storeu_si512(signal_data + i * 2, packed);
+    }
+
+    /* Handle remaining samples with scalar */
+    for (size_t i = simd_samples; i < sample_count; i++) {
+        memcpy(signal_data + i * 2, src + i * row_size, 2);
+    }
+}
+
+/* AVX512: Extract 1-byte elements (64 samples at a time) - NEW */
+static void extract_signal_1byte_avx512(const uint8_t* restrict row_data, uint8_t* restrict signal_data,
+                                        size_t sample_count, size_t signal_offset,
+                                        size_t row_size) {
+    const uint8_t* src = row_data + signal_offset;
+    size_t simd_samples = (sample_count / 64) * 64;
+
+    __m512i vindex = _mm512_setr_epi32(
+        0 * row_size, 1 * row_size, 2 * row_size, 3 * row_size,
+        4 * row_size, 5 * row_size, 6 * row_size, 7 * row_size,
+        8 * row_size, 9 * row_size, 10 * row_size, 11 * row_size,
+        12 * row_size, 13 * row_size, 14 * row_size, 15 * row_size
+    );
+
+    for (size_t i = 0; i < simd_samples; i += 64) {
+        /* Gather 64 bytes using four 16-element gathers */
+        __m512i data0 = _mm512_i32gather_epi32(vindex, (const void*)(src + (i + 0) * row_size), 1);
+        __m512i data1 = _mm512_i32gather_epi32(vindex, (const void*)(src + (i + 16) * row_size), 1);
+        __m512i data2 = _mm512_i32gather_epi32(vindex, (const void*)(src + (i + 32) * row_size), 1);
+        __m512i data3 = _mm512_i32gather_epi32(vindex, (const void*)(src + (i + 48) * row_size), 1);
+
+        /* Mask to keep only lowest byte */
+        __m512i mask = _mm512_set1_epi32(0x000000FF);
+        data0 = _mm512_and_epi32(data0, mask);
+        data1 = _mm512_and_epi32(data1, mask);
+        data2 = _mm512_and_epi32(data2, mask);
+        data3 = _mm512_and_epi32(data3, mask);
+
+        /* Pack 32-bit -> 16-bit */
+        __m512i packed01 = _mm512_packs_epi32(data0, data1);
+        __m512i packed23 = _mm512_packs_epi32(data2, data3);
+
+        /* Pack 16-bit -> 8-bit */
+        __m512i packed = _mm512_packs_epi16(packed01, packed23);
+
+        /* Fix ordering from packing */
+        packed = _mm512_permutexvar_epi64(
+            _mm512_setr_epi64(0, 2, 4, 6, 1, 3, 5, 7), packed
+        );
+
+        _mm512_storeu_si512(signal_data + i, packed);
+    }
+
+    /* Handle remaining samples with scalar */
+    for (size_t i = simd_samples; i < sample_count; i++) {
+        signal_data[i] = src[i * row_size];
+    }
+}
+#endif /* __AVX512F__ */
+
 /* Generic scalar extraction for other sizes */
-static void extract_signal_scalar(const uint8_t* row_data, uint8_t* signal_data,
+static void extract_signal_scalar(const uint8_t* restrict row_data, uint8_t* restrict signal_data,
                                   size_t sample_count, size_t signal_offset,
                                   size_t element_size, size_t row_size) {
     const uint8_t* src = row_data + signal_offset;
@@ -445,29 +901,74 @@ static void extract_signal_scalar(const uint8_t* row_data, uint8_t* signal_data,
  * EXTRACTION INFRASTRUCTURE
  * ============================================================================ */
 
-/* Generic extraction that chooses SIMD or scalar based on element size */
+/* Generic extraction that dispatches to best available SIMD implementation */
 /* Non-static to allow usage in erg_batch_thread.c */
-void extract_signal_generic(const uint8_t* row_data, uint8_t* signal_data,
+void extract_signal_generic(const ERG* erg, const uint8_t* restrict row_data, uint8_t* restrict signal_data,
                             size_t start_sample, size_t end_sample,
                             size_t signal_offset, size_t element_size, size_t row_size) {
     size_t         sample_count = end_sample - start_sample;
     const uint8_t* src          = row_data + start_sample * row_size;
     uint8_t*       dest         = signal_data + start_sample * element_size;
 
-    switch (element_size) {
-    case 2:
-        extract_signal_2byte_simd(src, dest, sample_count, signal_offset, row_size);
-        break;
-    case 4:
-        extract_signal_4byte_simd(src, dest, sample_count, signal_offset, row_size);
-        break;
-    case 8:
-        extract_signal_8byte_simd(src, dest, sample_count, signal_offset, row_size);
-        break;
-    default:
-        extract_signal_scalar(src, dest, sample_count, signal_offset, element_size, row_size);
-        break;
+    /* Dispatch based on CPU capabilities and element size */
+    /* Note: AVX-512 runtime detection works, but code requires compile-time support */
+    /* If AVX-512 is detected but not compiled in, fall through to AVX2 */
+
+#ifdef __AVX512F__
+    if (erg->simd_level >= ERG_SIMD_AVX512) {
+        switch (element_size) {
+        case 1:
+            extract_signal_1byte_avx512(src, dest, sample_count, signal_offset, row_size);
+            return;
+        case 2:
+            extract_signal_2byte_avx512(src, dest, sample_count, signal_offset, row_size);
+            return;
+        case 4:
+            extract_signal_4byte_avx512(src, dest, sample_count, signal_offset, row_size);
+            return;
+        case 8:
+            extract_signal_8byte_avx512(src, dest, sample_count, signal_offset, row_size);
+            return;
+        }
     }
+#endif
+
+    if (erg->simd_level >= ERG_SIMD_AVX2) {
+        switch (element_size) {
+        case 1:
+            extract_signal_1byte_avx2(src, dest, sample_count, signal_offset, row_size);
+            return;
+        case 2:
+            extract_signal_2byte_avx2(src, dest, sample_count, signal_offset, row_size);
+            return;
+        case 4:
+            extract_signal_4byte_avx2(src, dest, sample_count, signal_offset, row_size);
+            return;
+        case 8:
+            extract_signal_8byte_avx2(src, dest, sample_count, signal_offset, row_size);
+            return;
+        }
+    }
+
+    if (erg->simd_level >= ERG_SIMD_SSE2) {
+        switch (element_size) {
+        case 1:
+            extract_signal_1byte_sse2(src, dest, sample_count, signal_offset, row_size);
+            return;
+        case 2:
+            extract_signal_2byte_sse2(src, dest, sample_count, signal_offset, row_size);
+            return;
+        case 4:
+            extract_signal_4byte_sse2(src, dest, sample_count, signal_offset, row_size);
+            return;
+        case 8:
+            extract_signal_8byte_sse2(src, dest, sample_count, signal_offset, row_size);
+            return;
+        }
+    }
+
+    /* Fallback to scalar */
+    extract_signal_scalar(src, dest, sample_count, signal_offset, element_size, row_size);
 }
 
 /* ============================================================================
@@ -511,83 +1012,116 @@ void* erg_get_signal(const ERG* erg, const char* signal_name) {
     /* Point to the start of the data region in the mapped file */
     const uint8_t* row_data = (const uint8_t*)erg->mapped_data + erg->data_offset;
 
-    /* Always use single-threaded extraction */
-    extract_signal_generic(row_data, (uint8_t*)result, 0, erg->sample_count,
+    /* Extract raw signal data using SIMD */
+    extract_signal_generic(erg, row_data, (uint8_t*)result, 0, erg->sample_count,
                           offset, sig->type_size, erg->row_size);
+
+    /* Apply scaling if needed (factor != 1.0 or offset != 0.0) */
+    if (sig->factor != 1.0 || sig->offset != 0.0) {
+        /* Apply scaling in-place using native type */
+        switch (sig->type) {
+        case ERG_FLOAT: {
+            float* data = (float*)result;
+            float factor_f = (float)sig->factor;
+            float offset_f = (float)sig->offset;
+            for (size_t i = 0; i < erg->sample_count; i++) {
+                data[i] = data[i] * factor_f + offset_f;
+            }
+            break;
+        }
+        case ERG_DOUBLE: {
+            double* data = (double*)result;
+            for (size_t i = 0; i < erg->sample_count; i++) {
+                data[i] = data[i] * sig->factor + sig->offset;
+            }
+            break;
+        }
+        case ERG_INT: {
+            int32_t* data = (int32_t*)result;
+            int32_t factor_i = (int32_t)sig->factor;
+            int32_t offset_i = (int32_t)sig->offset;
+            for (size_t i = 0; i < erg->sample_count; i++) {
+                data[i] = data[i] * factor_i + offset_i;
+            }
+            break;
+        }
+        case ERG_UINT: {
+            uint32_t* data = (uint32_t*)result;
+            uint32_t factor_u = (uint32_t)sig->factor;
+            uint32_t offset_u = (uint32_t)sig->offset;
+            for (size_t i = 0; i < erg->sample_count; i++) {
+                data[i] = data[i] * factor_u + offset_u;
+            }
+            break;
+        }
+        case ERG_SHORT: {
+            int16_t* data = (int16_t*)result;
+            int16_t factor_s = (int16_t)sig->factor;
+            int16_t offset_s = (int16_t)sig->offset;
+            for (size_t i = 0; i < erg->sample_count; i++) {
+                data[i] = data[i] * factor_s + offset_s;
+            }
+            break;
+        }
+        case ERG_USHORT: {
+            uint16_t* data = (uint16_t*)result;
+            uint16_t factor_us = (uint16_t)sig->factor;
+            uint16_t offset_us = (uint16_t)sig->offset;
+            for (size_t i = 0; i < erg->sample_count; i++) {
+                data[i] = data[i] * factor_us + offset_us;
+            }
+            break;
+        }
+        case ERG_LONGLONG: {
+            int64_t* data = (int64_t*)result;
+            int64_t factor_ll = (int64_t)sig->factor;
+            int64_t offset_ll = (int64_t)sig->offset;
+            for (size_t i = 0; i < erg->sample_count; i++) {
+                data[i] = data[i] * factor_ll + offset_ll;
+            }
+            break;
+        }
+        case ERG_ULONGLONG: {
+            uint64_t* data = (uint64_t*)result;
+            uint64_t factor_ull = (uint64_t)sig->factor;
+            uint64_t offset_ull = (uint64_t)sig->offset;
+            for (size_t i = 0; i < erg->sample_count; i++) {
+                data[i] = data[i] * factor_ull + offset_ull;
+            }
+            break;
+        }
+        case ERG_CHAR: {
+            int8_t* data = (int8_t*)result;
+            int8_t factor_c = (int8_t)sig->factor;
+            int8_t offset_c = (int8_t)sig->offset;
+            for (size_t i = 0; i < erg->sample_count; i++) {
+                data[i] = data[i] * factor_c + offset_c;
+            }
+            break;
+        }
+        case ERG_UCHAR: {
+            uint8_t* data = (uint8_t*)result;
+            uint8_t factor_uc = (uint8_t)sig->factor;
+            uint8_t offset_uc = (uint8_t)sig->offset;
+            for (size_t i = 0; i < erg->sample_count; i++) {
+                data[i] = data[i] * factor_uc + offset_uc;
+            }
+            break;
+        }
+        case ERG_BYTES:
+        default:
+            /* No scaling for byte arrays */
+            break;
+        }
+    }
 
     return result;
 }
 
-double* erg_get_signal_as_double(const ERG* erg, const char* signal_name) {
-    int index = erg_find_signal_index(erg, signal_name);
-    if (index < 0) {
-        return NULL;
+void erg_set_simd_level(ERG* erg, ERGSIMDLevel level) {
+    if (erg) {
+        erg->simd_level = level;
     }
-
-    /* Get raw typed data first (automatically uses threading if beneficial) */
-    void* raw_data = erg_get_signal(erg, signal_name);
-    if (!raw_data) {
-        return NULL;
-    }
-
-    ERGSignal* sig = &erg->signals[index];
-
-    /* Allocate double array */
-    double* result = malloc(erg->sample_count * sizeof(double));
-    if (!result) {
-        fprintf(stderr, "FATAL: Failed to allocate double array (%zu bytes)\n",
-                erg->sample_count * sizeof(double));
-        free(raw_data);
-        exit(1);
-    }
-
-    /* Convert to double with scaling */
-    for (size_t i = 0; i < erg->sample_count; i++) {
-        double value = 0.0;
-
-        switch (sig->type) {
-        case ERG_FLOAT:
-            value = (double)((float*)raw_data)[i];
-            break;
-        case ERG_DOUBLE:
-            value = ((double*)raw_data)[i];
-            break;
-        case ERG_LONGLONG:
-            value = (double)((int64_t*)raw_data)[i];
-            break;
-        case ERG_ULONGLONG:
-            value = (double)((uint64_t*)raw_data)[i];
-            break;
-        case ERG_INT:
-            value = (double)((int32_t*)raw_data)[i];
-            break;
-        case ERG_UINT:
-            value = (double)((uint32_t*)raw_data)[i];
-            break;
-        case ERG_SHORT:
-            value = (double)((int16_t*)raw_data)[i];
-            break;
-        case ERG_USHORT:
-            value = (double)((uint16_t*)raw_data)[i];
-            break;
-        case ERG_CHAR:
-            value = (double)((int8_t*)raw_data)[i];
-            break;
-        case ERG_UCHAR:
-            value = (double)((uint8_t*)raw_data)[i];
-            break;
-        case ERG_BYTES:
-        default:
-            value = 0.0;
-            break;
-        }
-
-        /* Apply scaling */
-        result[i] = value * sig->factor + sig->offset;
-    }
-
-    free(raw_data);
-    return result;
 }
 
 void erg_free(ERG* erg) {
@@ -639,173 +1173,4 @@ void erg_free(ERG* erg) {
 
     erg->signal_count = 0;
     erg->sample_count = 0;
-}
-
-/* ============================================================================
- * BATCH EXTRACTION API (Sequential)
- * ============================================================================ */
-
-void erg_get_signals_batch(const ERG* erg, const char** signal_names,
-                           size_t num_signals, void** out_signals) {
-    if (!erg || !signal_names || !out_signals || num_signals == 0) {
-        return;
-    }
-
-    /* Initialize all output pointers to NULL */
-    for (size_t i = 0; i < num_signals; i++) {
-        out_signals[i] = NULL;
-    }
-
-    /* Handle empty data case */
-    if (erg->sample_count == 0) {
-        return;
-    }
-
-    /* Memory-mapped data check */
-    if (!erg->mapped_data) {
-        fprintf(stderr, "FATAL: ERG file not memory-mapped\n");
-        exit(1);
-    }
-
-    const uint8_t* row_data = (const uint8_t*)erg->mapped_data + erg->data_offset;
-
-    /* Extract each signal sequentially */
-    for (size_t i = 0; i < num_signals; i++) {
-        int signal_index = erg_find_signal_index(erg, signal_names[i]);
-        if (signal_index < 0) {
-            continue;  /* Signal not found, keep NULL */
-        }
-
-        ERGSignal* sig = &erg->signals[signal_index];
-
-        /* Allocate output array */
-        void* result = malloc(erg->sample_count * sig->type_size);
-        if (!result) {
-            fprintf(stderr, "FATAL: Failed to allocate signal array for %s (%zu bytes)\n",
-                    signal_names[i], erg->sample_count * sig->type_size);
-            exit(1);
-        }
-
-        /* Calculate offset for this signal */
-        size_t offset = 0;
-        for (int j = 0; j < signal_index; j++) {
-            offset += erg->signals[j].type_size;
-        }
-
-        /* Extract signal using SIMD */
-        extract_signal_generic(row_data, (uint8_t*)result, 0, erg->sample_count,
-                              offset, sig->type_size, erg->row_size);
-
-        out_signals[i] = result;
-    }
-}
-
-void erg_get_signals_batch_as_double(const ERG* erg, const char** signal_names,
-                                     size_t num_signals, double** out_signals) {
-    if (!erg || !signal_names || !out_signals || num_signals == 0) {
-        return;
-    }
-
-    /* Initialize all output pointers to NULL */
-    for (size_t i = 0; i < num_signals; i++) {
-        out_signals[i] = NULL;
-    }
-
-    /* Handle empty data case */
-    if (erg->sample_count == 0) {
-        return;
-    }
-
-    /* Memory-mapped data check */
-    if (!erg->mapped_data) {
-        fprintf(stderr, "FATAL: ERG file not memory-mapped\n");
-        exit(1);
-    }
-
-    const uint8_t* row_data = (const uint8_t*)erg->mapped_data + erg->data_offset;
-
-    /* Extract and convert each signal */
-    for (size_t i = 0; i < num_signals; i++) {
-        int signal_index = erg_find_signal_index(erg, signal_names[i]);
-        if (signal_index < 0) {
-            continue;  /* Signal not found, keep NULL */
-        }
-
-        ERGSignal* sig = &erg->signals[signal_index];
-
-        /* First extract raw data */
-        void* raw_data = malloc(erg->sample_count * sig->type_size);
-        if (!raw_data) {
-            fprintf(stderr, "FATAL: Failed to allocate raw signal array for %s\n",
-                    signal_names[i]);
-            exit(1);
-        }
-
-        /* Calculate offset for this signal */
-        size_t offset = 0;
-        for (int j = 0; j < signal_index; j++) {
-            offset += erg->signals[j].type_size;
-        }
-
-        /* Extract signal using SIMD */
-        extract_signal_generic(row_data, (uint8_t*)raw_data, 0, erg->sample_count,
-                              offset, sig->type_size, erg->row_size);
-
-        /* Allocate double array */
-        double* result = malloc(erg->sample_count * sizeof(double));
-        if (!result) {
-            fprintf(stderr, "FATAL: Failed to allocate double array for %s\n",
-                    signal_names[i]);
-            free(raw_data);
-            exit(1);
-        }
-
-        /* Convert to double with scaling */
-        for (size_t j = 0; j < erg->sample_count; j++) {
-            double value = 0.0;
-
-            switch (sig->type) {
-            case ERG_FLOAT:
-                value = (double)((float*)raw_data)[j];
-                break;
-            case ERG_DOUBLE:
-                value = ((double*)raw_data)[j];
-                break;
-            case ERG_LONGLONG:
-                value = (double)((int64_t*)raw_data)[j];
-                break;
-            case ERG_ULONGLONG:
-                value = (double)((uint64_t*)raw_data)[j];
-                break;
-            case ERG_INT:
-                value = (double)((int32_t*)raw_data)[j];
-                break;
-            case ERG_UINT:
-                value = (double)((uint32_t*)raw_data)[j];
-                break;
-            case ERG_SHORT:
-                value = (double)((int16_t*)raw_data)[j];
-                break;
-            case ERG_USHORT:
-                value = (double)((uint16_t*)raw_data)[j];
-                break;
-            case ERG_CHAR:
-                value = (double)((int8_t*)raw_data)[j];
-                break;
-            case ERG_UCHAR:
-                value = (double)((uint8_t*)raw_data)[j];
-                break;
-            case ERG_BYTES:
-            default:
-                value = 0.0;
-                break;
-            }
-
-            /* Apply scaling */
-            result[j] = value * sig->factor + sig->offset;
-        }
-
-        free(raw_data);
-        out_signals[i] = result;
-    }
 }
