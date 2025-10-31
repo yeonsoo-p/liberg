@@ -28,26 +28,31 @@ def plot_csv(csv_path="result.csv"):
         print(f"Sampling frequency: {freq:.3f} Hz (dt = {dt:.6f} s)")
         print(f"Time range: {df['Time'].iloc[0]:.3f} to {df['Time'].iloc[-1]:.3f} seconds")
 
-    # Create subplots
-    fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
-    fig.suptitle('CarMaker Simulation Results', fontsize=14, fontweight='bold')
+    # Get all columns except 'Time'
+    signal_columns = [col for col in df.columns if col != 'Time']
 
-    # Plot Car.ax (acceleration)
-    if 'Car.ax' in df.columns:
-        axes[0].plot(df['Time'], df['Car.ax'], 'b-', linewidth=1)
-        axes[0].set_ylabel('Car.ax [m/s²]')
-        axes[0].grid(True, alpha=0.3)
-        axes[0].set_title('Longitudinal Acceleration')
+    if not signal_columns:
+        print("Error: No signal columns found (only Time column present)")
+        return
 
-    # Plot Car.v (velocity)
-    if 'Car.v' in df.columns:
-        axes[1].plot(df['Time'], df['Car.v'], 'g-', linewidth=1)
-        axes[1].set_ylabel('Car.v [m/s]')
-        axes[1].grid(True, alpha=0.3)
-        axes[1].set_title('Vehicle Velocity')
+    # Create subplots based on number of signals
+    n_signals = len(signal_columns)
+    fig, axes = plt.subplots(n_signals, 1, figsize=(12, 2.5 * n_signals), sharex=True)
+    fig.suptitle('CSV Data Visualization', fontsize=14, fontweight='bold')
 
+    # Handle single subplot case (axes is not an array)
+    if n_signals == 1:
+        axes = [axes]
 
-    axes[2].set_xlabel('Time [s]')
+    # Plot each signal
+    colors = plt.cm.tab10(range(n_signals))
+    for idx, col in enumerate(signal_columns):
+        axes[idx].plot(df['Time'], df[col], color=colors[idx], linewidth=1)
+        axes[idx].set_ylabel(col)
+        axes[idx].grid(True, alpha=0.3)
+        axes[idx].set_title(col)
+
+    axes[-1].set_xlabel('Time [s]')
 
     plt.tight_layout()
 

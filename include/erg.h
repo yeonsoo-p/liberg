@@ -47,15 +47,6 @@ typedef struct {
     double       offset;    /* Scaling offset */
 } ERGSignal;
 
-/**
- * SIMD instruction set capabilities
- */
-typedef enum {
-    ERG_SIMD_NONE = 0,
-    ERG_SIMD_SSE2 = 1,
-    ERG_SIMD_AVX2 = 2,
-    ERG_SIMD_AVX512 = 3
-} ERGSIMDLevel;
 
 /**
  * Main ERG file structure
@@ -77,9 +68,6 @@ typedef struct {
     size_t        row_size;       /* Size of one data row in bytes */
 
     Arena         metadata_arena; /* Arena for all string allocations */
-
-    /* CPU feature detection */
-    ERGSIMDLevel  simd_level;     /* Best available SIMD instruction set */
 
     /* Memory-mapped file data */
     void*         mapped_data;    /* Memory-mapped file data (NULL if not mapped) */
@@ -146,15 +134,6 @@ int erg_find_signal_index(const ERG* erg, const char* signal_name);
  * Free all memory associated with ERG structure
  */
 void erg_free(ERG* erg);
-
-/**
- * Override SIMD level for testing purposes
- * This allows testing different SIMD implementations regardless of CPU detection
- *
- * @param erg Pointer to ERG structure
- * @param level SIMD level to use (ERG_SIMD_NONE, ERG_SIMD_SSE2, ERG_SIMD_AVX2, ERG_SIMD_AVX512)
- */
-void erg_set_simd_level(ERG* erg, ERGSIMDLevel level);
 
 #ifdef __cplusplus
 }

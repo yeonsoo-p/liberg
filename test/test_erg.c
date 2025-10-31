@@ -41,16 +41,7 @@ void test_init_and_parse(const char* erg_path) {
     double end_time = get_time_seconds();
     double elapsed_ms = (end_time - start_time) * 1000.0;
 
-    const char* simd_name = "Unknown";
-    switch (erg.simd_level) {
-    case 0: simd_name = "None (Scalar)"; break;
-    case 1: simd_name = "SSE2"; break;
-    case 2: simd_name = "AVX2"; break;
-    case 3: simd_name = "AVX-512"; break;
-    }
-
     printf("File: %s\n", erg_path);
-    printf("SIMD Level: %s\n", simd_name);
     printf("Signals: %zu\n", erg.signal_count);
     printf("Samples: %zu\n", erg.sample_count);
     printf("Row size: %zu bytes\n", erg.row_size);
@@ -134,122 +125,66 @@ void test_hot_read(const char* erg_path) {
     erg_free(&erg);
 }
 
-/* 4. Test and benchmark SIMD levels */
-void test_compare_simd_levels(const char* erg_path) {
-    printf("\n=== Test 4: Compare SIMD Levels ===\n");
+/* 4. Test signal extraction */
+void test_signal_extraction(const char* erg_path) {
+    printf("\n=== Test 4: Signal Extraction ===\n");
 
-    /* Test signal names - use only double type signals to avoid type casting issues */
-    const char* test_signals[] = {"Time", "Vhcl.Yaw", "Vhcl.sRoad"};
-    size_t num_test_signals = 3;
+    ERG erg;
+    erg_init(&erg, erg_path);
+    erg_parse(&erg);
 
-    /* SIMD levels to test */
-    const ERGSIMDLevel levels[] = {ERG_SIMD_NONE, ERG_SIMD_SSE2, ERG_SIMD_AVX2, ERG_SIMD_AVX512};
-    const char* level_names[] = {"Scalar", "SSE2", "AVX2", "AVX-512"};
-    size_t num_levels = 4;
+    /* Test multiple signals */
+    const char* test_signals[] = {"Time", "Car.ax", "Car.v"};
+    size_t num_signals = 3;
 
-    /* Store reference results from scalar implementation */
-    double** reference_results = malloc(num_test_signals * sizeof(double*));
-    size_t sample_count = 0;
+    printf("Extracting %zu signals...\n", num_signals);
 
-    /* Store reference timing */
-    double reference_time_ms = 0.0;
+    for (size_t i = 0; i < num_signals; i++) {
+        const ERGSignal* sig_info = erg_get_signal_info(&erg, test_signals[i]);
+        void* data = erg_get_signal(&erg, test_signals[i]);
 
-    printf("Testing %zu signals: ", num_test_signals);
-    for (size_t i = 0; i < num_test_signals; i++) {
-        printf("%s", test_signals[i]);
-        if (i < num_test_signals - 1) printf(", ");
-    }
-    printf("\n\n");
+        if (data && sig_info) {
+            printf("  %s (type=%d): ", test_signals[i], sig_info->type);
 
-    /* Test each SIMD level */
-    for (size_t level_idx = 0; level_idx < num_levels; level_idx++) {
-        ERG erg;
-        erg_init(&erg, erg_path);
-        erg_parse(&erg);
-        sample_count = erg.sample_count;
-
-        /* Override SIMD level */
-        erg_set_simd_level(&erg, levels[level_idx]);
-
-        printf("%s:\n", level_names[level_idx]);
-
-        double start_time = get_time_seconds();
-
-        /* Extract test signals */
-        double* results[3] = {NULL};
-        for (size_t i = 0; i < num_test_signals; i++) {
-            results[i] = (double*)erg_get_signal(&erg, test_signals[i]);
-        }
-
-        double end_time = get_time_seconds();
-        double elapsed_ms = (end_time - start_time) * 1000.0;
-
-        printf("  Extraction time: %.3f ms", elapsed_ms);
-
-        /* Verify correctness against scalar reference */
-        if (level_idx == 0) {
-            /* This is scalar - save as reference */
-            for (size_t i = 0; i < num_test_signals; i++) {
-                reference_results[i] = results[i];
+            /* Print first and last value based on actual type */
+            switch (sig_info->type) {
+            case ERG_FLOAT:
+                printf("first=%.6f, last=%.6f\n",
+                       ((float*)data)[0], ((float*)data)[erg.sample_count - 1]);
+                break;
+            case ERG_DOUBLE:
+                printf("first=%.6f, last=%.6f\n",
+                       ((double*)data)[0], ((double*)data)[erg.sample_count - 1]);
+                break;
+            case ERG_INT:
+                printf("first=%d, last=%d\n",
+                       ((int32_t*)data)[0], ((int32_t*)data)[erg.sample_count - 1]);
+                break;
+            case ERG_UINT:
+                printf("first=%u, last=%u\n",
+                       ((uint32_t*)data)[0], ((uint32_t*)data)[erg.sample_count - 1]);
+                break;
+            default:
+                printf("(unsupported type for display)\n");
+                break;
             }
-            reference_time_ms = elapsed_ms;
-            printf(" (BASELINE)\n");
+            free(data);
         } else {
-            /* Compare with reference */
-            int all_correct = 1;
-            size_t max_errors_to_show = 5;
-            size_t errors_shown = 0;
-
-            for (size_t sig_idx = 0; sig_idx < num_test_signals; sig_idx++) {
-                if (!results[sig_idx] || !reference_results[sig_idx]) {
-                    if (results[sig_idx] != reference_results[sig_idx]) {
-                        printf("\n  ERROR: Signal '%s' availability mismatch\n", test_signals[sig_idx]);
-                        all_correct = 0;
-                    }
-                    continue;
-                }
-
-                for (size_t sample = 0; sample < sample_count && errors_shown < max_errors_to_show; sample++) {
-                    double diff = fabs(results[sig_idx][sample] - reference_results[sig_idx][sample]);
-                    if (diff > EPSILON) {
-                        printf("\n  ERROR: Signal '%s' sample %zu: expected %.6f, got %.6f (diff: %e)\n",
-                               test_signals[sig_idx], sample,
-                               reference_results[sig_idx][sample], results[sig_idx][sample], diff);
-                        all_correct = 0;
-                        errors_shown++;
-                    }
-                }
-            }
-
-            if (all_correct) {
-                /* Calculate speedup */
-                double speedup = reference_time_ms / elapsed_ms;
-                printf(" (%.2fx speedup) [PASS]\n", speedup);
-            } else {
-                printf(" [FAIL]\n");
-            }
-
-            /* Free current results (not reference) */
-            for (size_t i = 0; i < num_test_signals; i++) {
-                if (results[i]) free(results[i]);
-            }
+            printf("  %s: not found\n", test_signals[i]);
         }
-
-        erg_free(&erg);
     }
 
-    /* Free reference results */
-    for (size_t i = 0; i < num_test_signals; i++) {
-        if (reference_results[i]) free(reference_results[i]);
-    }
-    free(reference_results);
-
-    printf("\n[OK] SIMD comparison completed\n");
+    printf("[OK] Signal extraction completed\n");
+    erg_free(&erg);
 }
 
-/* 5. Export results for set signal names using all four SIMD levels */
-void test_export_all_simd_levels(const char* erg_path) {
-    printf("\n=== Test 5: Export Results with All SIMD Levels ===\n");
+/* 5. Export CSV test */
+void test_export_csv(const char* erg_path) {
+    printf("\n=== Test 5: Export CSV ===\n");
+
+    ERG erg;
+    erg_init(&erg, erg_path);
+    erg_parse(&erg);
 
     /* Signal names to export */
     const char* signal_names[] = {
@@ -262,113 +197,133 @@ void test_export_all_simd_levels(const char* erg_path) {
     };
     size_t num_signals = 6;
 
-    /* SIMD levels to test */
-    const ERGSIMDLevel levels[] = {ERG_SIMD_NONE, ERG_SIMD_SSE2, ERG_SIMD_AVX2, ERG_SIMD_AVX512};
-    const char* level_names[] = {"scalar", "sse2", "avx2", "avx512"};
-    size_t num_levels = 4;
+    /* Extract all signals with their type information */
+    void* signals[6] = {NULL};
+    const ERGSignal* signal_info[6] = {NULL};
 
-    printf("Exporting %zu signals using %zu SIMD levels...\n", num_signals, num_levels);
+    for (size_t i = 0; i < num_signals; i++) {
+        signal_info[i] = erg_get_signal_info(&erg, signal_names[i]);
+        signals[i] = erg_get_signal(&erg, signal_names[i]);
+    }
 
-    /* Export for each SIMD level */
-    for (size_t level_idx = 0; level_idx < num_levels; level_idx++) {
-        ERG erg;
-        erg_init(&erg, erg_path);
-        erg_parse(&erg);
+    /* Create filename */
+    const char* filename = "result.csv";
 
-        /* Override SIMD level */
-        erg_set_simd_level(&erg, levels[level_idx]);
+    /* Write CSV */
+    FILE* csv = fopen(filename, "w");
+    if (!csv) {
+        fprintf(stderr, "Failed to open %s for writing\n", filename);
+        return;
+    }
 
-        /* Extract all signals with their type information */
-        void* signals[6] = {NULL};
-        const ERGSignal* signal_info[6] = {NULL};
+    /* Header */
+    for (size_t i = 0; i < num_signals; i++) {
+        fprintf(csv, "%s", signal_names[i]);
+        if (i < num_signals - 1)
+            fprintf(csv, ",");
+    }
+    fprintf(csv, "\n");
 
-        for (size_t i = 0; i < num_signals; i++) {
-            signal_info[i] = erg_get_signal_info(&erg, signal_names[i]);
-            signals[i] = erg_get_signal(&erg, signal_names[i]);
-        }
-
-        /* Create filename */
-        char filename[256];
-        snprintf(filename, sizeof(filename), "result_%s.csv", level_names[level_idx]);
-
-        /* Write CSV */
-        FILE* csv = fopen(filename, "w");
-        if (!csv) {
-            fprintf(stderr, "Failed to open %s for writing\n", filename);
-            continue;
-        }
-
-        /* Header */
-        for (size_t i = 0; i < num_signals; i++) {
-            fprintf(csv, "%s", signal_names[i]);
-            if (i < num_signals - 1)
+    /* Data - handle each type correctly */
+    for (size_t row = 0; row < erg.sample_count; row++) {
+        for (size_t col = 0; col < num_signals; col++) {
+            if (signals[col] && signal_info[col]) {
+                /* Cast to the correct type based on signal type */
+                switch (signal_info[col]->type) {
+                case ERG_FLOAT:
+                    fprintf(csv, "%.6f", ((float*)signals[col])[row]);
+                    break;
+                case ERG_DOUBLE:
+                    fprintf(csv, "%.6f", ((double*)signals[col])[row]);
+                    break;
+                case ERG_INT:
+                    fprintf(csv, "%d", ((int32_t*)signals[col])[row]);
+                    break;
+                case ERG_UINT:
+                    fprintf(csv, "%u", ((uint32_t*)signals[col])[row]);
+                    break;
+                case ERG_SHORT:
+                    fprintf(csv, "%d", ((int16_t*)signals[col])[row]);
+                    break;
+                case ERG_USHORT:
+                    fprintf(csv, "%u", ((uint16_t*)signals[col])[row]);
+                    break;
+                case ERG_LONGLONG:
+                    fprintf(csv, "%lld", ((int64_t*)signals[col])[row]);
+                    break;
+                case ERG_ULONGLONG:
+                    fprintf(csv, "%llu", ((uint64_t*)signals[col])[row]);
+                    break;
+                case ERG_CHAR:
+                    fprintf(csv, "%d", ((int8_t*)signals[col])[row]);
+                    break;
+                case ERG_UCHAR:
+                    fprintf(csv, "%u", ((uint8_t*)signals[col])[row]);
+                    break;
+                default:
+                    fprintf(csv, "");
+                    break;
+                }
+            } else {
+                fprintf(csv, "");
+            }
+            if (col < num_signals - 1)
                 fprintf(csv, ",");
         }
         fprintf(csv, "\n");
+    }
 
-        /* Data - handle each type correctly */
-        for (size_t row = 0; row < erg.sample_count; row++) {
-            for (size_t col = 0; col < num_signals; col++) {
-                if (signals[col] && signal_info[col]) {
-                    /* Cast to the correct type based on signal type */
-                    switch (signal_info[col]->type) {
-                    case ERG_FLOAT:
-                        fprintf(csv, "%.6f", ((float*)signals[col])[row]);
-                        break;
-                    case ERG_DOUBLE:
-                        fprintf(csv, "%.6f", ((double*)signals[col])[row]);
-                        break;
-                    case ERG_INT:
-                        fprintf(csv, "%d", ((int32_t*)signals[col])[row]);
-                        break;
-                    case ERG_UINT:
-                        fprintf(csv, "%u", ((uint32_t*)signals[col])[row]);
-                        break;
-                    case ERG_SHORT:
-                        fprintf(csv, "%d", ((int16_t*)signals[col])[row]);
-                        break;
-                    case ERG_USHORT:
-                        fprintf(csv, "%u", ((uint16_t*)signals[col])[row]);
-                        break;
-                    case ERG_LONGLONG:
-                        fprintf(csv, "%lld", ((int64_t*)signals[col])[row]);
-                        break;
-                    case ERG_ULONGLONG:
-                        fprintf(csv, "%llu", ((uint64_t*)signals[col])[row]);
-                        break;
-                    case ERG_CHAR:
-                        fprintf(csv, "%d", ((int8_t*)signals[col])[row]);
-                        break;
-                    case ERG_UCHAR:
-                        fprintf(csv, "%u", ((uint8_t*)signals[col])[row]);
-                        break;
-                    default:
-                        fprintf(csv, "");
-                        break;
-                    }
-                } else {
-                    fprintf(csv, "");
-                }
-                if (col < num_signals - 1)
-                    fprintf(csv, ",");
-            }
-            fprintf(csv, "\n");
-        }
+    fclose(csv);
 
-        fclose(csv);
+    printf("Exported %s (%zu rows)\n", filename, erg.sample_count);
 
-        printf("  %s: %s (%zu rows)\n", level_names[level_idx], filename, erg.sample_count);
-
-        /* Free all signal arrays */
-        for (size_t i = 0; i < num_signals; i++) {
-            if (signals[i])
-                free(signals[i]);
-        }
-
-        erg_free(&erg);
+    /* Free all signal arrays */
+    for (size_t i = 0; i < num_signals; i++) {
+        if (signals[i])
+            free(signals[i]);
     }
 
     printf("[OK] Export completed\n");
+    erg_free(&erg);
+}
+
+/* 6. Simple performance benchmark */
+void test_benchmark(const char* erg_path) {
+    printf("\n=== Test 6: Performance Benchmark ===\n");
+
+    const char* signal_name = "Time";
+    const int iterations = 10;
+
+    ERG erg;
+    erg_init(&erg, erg_path);
+    erg_parse(&erg);
+
+    printf("Signal: %s\n", signal_name);
+    printf("Iterations: %d\n\n", iterations);
+
+    double total_time = 0.0;
+    double min_time = 1e9;
+
+    for (int iter = 0; iter < iterations; iter++) {
+        double start_time = get_time_seconds();
+        double* data = (double*)erg_get_signal(&erg, signal_name);
+        double end_time = get_time_seconds();
+
+        double elapsed = (end_time - start_time) * 1000.0;
+        total_time += elapsed;
+        if (elapsed < min_time) {
+            min_time = elapsed;
+        }
+
+        free(data);
+    }
+
+    double avg_time = total_time / iterations;
+    printf("Average time: %.3f ms\n", avg_time);
+    printf("Minimum time: %.3f ms\n", min_time);
+
+    printf("[OK] Benchmark completed\n");
+    erg_free(&erg);
 }
 
 int main(int argc, char* argv[]) {
@@ -394,15 +349,12 @@ int main(int argc, char* argv[]) {
     test_init_and_parse(erg_path);
     test_cold_read(erg_path);
     test_hot_read(erg_path);
-    test_compare_simd_levels(erg_path);
-    test_export_all_simd_levels(erg_path);
+    test_signal_extraction(erg_path);
+    test_export_csv(erg_path);
+    test_benchmark(erg_path);
 
     printf("\n=== All Tests Passed! ===\n");
-    printf("\nGenerated files:\n");
-    printf("  result_scalar.csv - Export using scalar implementation\n");
-    printf("  result_sse2.csv   - Export using SSE2 implementation\n");
-    printf("  result_avx2.csv   - Export using AVX2 implementation\n");
-    printf("  result_avx512.csv - Export using AVX-512 implementation\n");
+    printf("\nGenerated result.csv file for validation.\n");
 
     return 0;
 }
