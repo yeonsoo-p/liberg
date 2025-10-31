@@ -90,7 +90,7 @@ void* memcpy_simd(void* dest, const void* src, size_t n) {
     /* Process 32 bytes at a time with AVX2 */
     while (n >= 32) {
         __m256i chunk = _mm256_loadu_si256((const __m256i*)s);
-        _mm256_store_si256((__m256i*)d, chunk);
+        _mm256_storeu_si256((__m256i*)d, chunk);
 
         d += 32;
         s += 32;
@@ -117,20 +117,12 @@ void* memcpy_simd_unaligned(void* dest, const void* src, size_t n) {
     char*       d = (char*)dest;
     const char* s = (const char*)src;
 
-    /* For very small copies, use direct assignment (fastest) */
+    /* For very small copies, use memcpy to avoid UB */
     if (n <= 16) {
-        /* Unrolled loop for small sizes - overlapping copy trick */
-        if (n >= 8) {
-            *((uint64_t*)d)           = *((uint64_t*)s);
-            *((uint64_t*)(d + n - 8)) = *((uint64_t*)(s + n - 8));
-        } else if (n >= 4) {
-            *((uint32_t*)d)           = *((uint32_t*)s);
-            *((uint32_t*)(d + n - 4)) = *((uint32_t*)(s + n - 4));
-        } else if (n >= 2) {
-            *((uint16_t*)d)           = *((uint16_t*)s);
-            *((uint16_t*)(d + n - 2)) = *((uint16_t*)(s + n - 2));
-        } else if (n == 1) {
-            *d = *s;
+        /* Simple byte-by-byte copy for small sizes
+         * Compiler will optimize this to appropriate instructions */
+        for (size_t i = 0; i < n; i++) {
+            d[i] = s[i];
         }
         return dest;
     }

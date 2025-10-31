@@ -463,7 +463,7 @@ void* erg_get_signal(const ERG* erg, const char* signal_name) {
         offset += erg->signals[i].type_size;
     }
 
-    ERGSignal* sig = &erg->signals[index];
+    const ERGSignal* sig = &erg->signals[index];
 
     /* Allocate output array for signal data */
     void* result = malloc(erg->sample_count * sig->type_size);
